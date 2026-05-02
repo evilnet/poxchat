@@ -5984,6 +5984,10 @@ mg_setup_pane_layout_dnd (GtkWidget *vpane, gboolean is_left)
 	return overlay;
 }
 
+/* Forward declaration — defined alongside the chanview drag-end below. */
+static void mg_userlist_drag_end_cb (GtkDragSource *source, GdkDrag *drag,
+                                     gboolean delete_data, gpointer user_data);
+
 /* Set up userlist as drag source for layout swapping */
 void
 mg_setup_userlist_drag_source (GtkWidget *treeview)
@@ -5993,7 +5997,77 @@ mg_setup_userlist_drag_source (GtkWidget *treeview)
 	source = gtk_drag_source_new ();
 	gtk_drag_source_set_actions (source, GDK_ACTION_MOVE);
 	g_signal_connect (source, "prepare", G_CALLBACK (mg_userlist_drag_prepare_cb), NULL);
+	g_signal_connect (source, "drag-end", G_CALLBACK (mg_userlist_drag_end_cb), NULL);
 	gtk_widget_add_controller (treeview, GTK_EVENT_CONTROLLER (source));
+}
+
+/* Reset all drop-indicator visual state across every gui — the tabs-mode
+ * top/bottom drop strips, the xtext overlay indicators, and the vpane
+ * overlay indicators.  Called from drag-end and from each drop handler.
+ *
+ * The leave callbacks on individual drop targets are normally where this
+ * cleanup happens, but GTK4 doesn't always emit a trailing leave after a
+ * successful drop or a drag-cancel — and our layout-swap drops reparent
+ * widgets in ways that break ancestor walks from the source.  Walking
+ * every gui is harmless because at most one drag is active at a time. */
+static void
+mg_clear_all_drop_indicators (void)
+{
+	GSList *list;
+
+	for (list = sess_list; list; list = list->next)
+	{
+		session *sess = list->data;
+		session_gui *gui = sess->gui;
+		GtkWidget *ind;
+
+		if (!gui)
+			continue;
+
+		if (gui->top_drop_strip)
+		{
+			gtk_widget_remove_css_class (gui->top_drop_strip, "hexchat-drop-hover");
+			gtk_widget_set_visible (gui->top_drop_strip, FALSE);
+		}
+		if (gui->bottom_drop_strip)
+		{
+			gtk_widget_remove_css_class (gui->bottom_drop_strip, "hexchat-drop-hover");
+			gtk_widget_set_visible (gui->bottom_drop_strip, FALSE);
+		}
+
+		/* xtext indicators: explicit visibility + hover class. */
+		if (gui->xtext)
+		{
+			ind = g_object_get_data (G_OBJECT (gui->xtext), "hc-drop-top");
+			if (ind)
+			{
+				gtk_widget_remove_css_class (ind, "hexchat-drop-hover");
+				gtk_widget_set_visible (ind, FALSE);
+			}
+			ind = g_object_get_data (G_OBJECT (gui->xtext), "hc-drop-bottom");
+			if (ind)
+			{
+				gtk_widget_remove_css_class (ind, "hexchat-drop-hover");
+				gtk_widget_set_visible (ind, FALSE);
+			}
+		}
+
+		/* vpane indicators: always-visible-but-transparent, hover class only. */
+		if (gui->vpane_left)
+		{
+			ind = g_object_get_data (G_OBJECT (gui->vpane_left), "hc-drop-top");
+			if (ind) gtk_widget_remove_css_class (ind, "hexchat-drop-hover");
+			ind = g_object_get_data (G_OBJECT (gui->vpane_left), "hc-drop-bottom");
+			if (ind) gtk_widget_remove_css_class (ind, "hexchat-drop-hover");
+		}
+		if (gui->vpane_right)
+		{
+			ind = g_object_get_data (G_OBJECT (gui->vpane_right), "hc-drop-top");
+			if (ind) gtk_widget_remove_css_class (ind, "hexchat-drop-hover");
+			ind = g_object_get_data (G_OBJECT (gui->vpane_right), "hc-drop-bottom");
+			if (ind) gtk_widget_remove_css_class (ind, "hexchat-drop-hover");
+		}
+	}
 }
 
 /* Walk up from the drag-source widget to find the session_gui that
@@ -6037,8 +6111,6 @@ static void
 mg_chanview_drag_end_cb (GtkDragSource *source, GdkDrag *drag,
                          gboolean delete_data, gpointer user_data)
 {
-	GSList *list;
-
 	(void) drag; (void) delete_data; (void) user_data;
 
 	/* Reset the drag source gesture so its internal sequence state is
@@ -6049,29 +6121,19 @@ mg_chanview_drag_end_cb (GtkDragSource *source, GdkDrag *drag,
 	if (source)
 		gtk_event_controller_reset (GTK_EVENT_CONTROLLER (source));
 
-	/* Iterate every session's gui and force-hide its tabs-mode drop
-	 * strips. Walking from the source widget back to a specific gui is
-	 * unreliable after a drop — the layout rebuild in mg_apply_layout_drop
-	 * can reparent chanview such that gtk_widget_is_ancestor() fails.
-	 * Since only one drag is active at a time across the whole
-	 * application, clearing all sessions here is harmless. */
-	for (list = sess_list; list; list = list->next)
-	{
-		session *sess = list->data;
-		session_gui *gui = sess->gui;
-		if (!gui)
-			continue;
-		if (gui->top_drop_strip)
-		{
-			gtk_widget_remove_css_class (gui->top_drop_strip, "hexchat-drop-hover");
-			gtk_widget_set_visible (gui->top_drop_strip, FALSE);
-		}
-		if (gui->bottom_drop_strip)
-		{
-			gtk_widget_remove_css_class (gui->bottom_drop_strip, "hexchat-drop-hover");
-			gtk_widget_set_visible (gui->bottom_drop_strip, FALSE);
-		}
-	}
+	mg_clear_all_drop_indicators ();
+}
+
+static void
+mg_userlist_drag_end_cb (GtkDragSource *source, GdkDrag *drag,
+                         gboolean delete_data, gpointer user_data)
+{
+	(void) drag; (void) delete_data; (void) user_data;
+
+	if (source)
+		gtk_event_controller_reset (GTK_EVENT_CONTROLLER (source));
+
+	mg_clear_all_drop_indicators ();
 }
 
 /* Set up chanview as drag source for layout swapping */
