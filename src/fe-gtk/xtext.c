@@ -6136,6 +6136,12 @@ gtk_xtext_save (GtkXText * xtext, int fh)
 	textentry *ent;
 	int newlen;
 	char *buf;
+	char *stamp_str;
+	int stamp_len;
+	/* Honor the user's "Show timestamps" preference, mirroring what they
+	 * see on screen.  Per-buffer time_stamp flag is the source of truth
+	 * (it tracks prefs.hex_stamp_text via gtk_xtext_set_time_stamp). */
+	gboolean want_stamp = xtext->buffer->time_stamp;
 
 	/* Virtual mode: stream all messages from DB in batches */
 	if (HAS_VIRT_DB (xtext->buffer) &&
@@ -6158,6 +6164,12 @@ gtk_xtext_save (GtkXText * xtext, int fh)
 				scrollback_msg *msg = iter->data;
 				if (msg->text)
 				{
+					if (want_stamp && msg->timestamp > 0)
+					{
+						stamp_len = xtext_get_stamp_str (msg->timestamp, &stamp_str);
+						HC_IGNORE_RESULT (write (fh, stamp_str, stamp_len));
+						g_free (stamp_str);
+					}
 					buf = gtk_xtext_strip_color ((unsigned char *)msg->text,
 					                             strlen (msg->text), NULL,
 					                             &newlen, NULL, FALSE);
@@ -6175,6 +6187,12 @@ gtk_xtext_save (GtkXText * xtext, int fh)
 	ent = xtext->buffer->text_first;
 	while (ent)
 	{
+		if (want_stamp && ent->stamp > 0)
+		{
+			stamp_len = xtext_get_stamp_str (ent->stamp, &stamp_str);
+			HC_IGNORE_RESULT (write (fh, stamp_str, stamp_len));
+			g_free (stamp_str);
+		}
 		buf = gtk_xtext_strip_color (ent->str, ent->str_len, NULL,
 											  &newlen, NULL, FALSE);
 		HC_IGNORE_RESULT (write (fh, buf, newlen));
