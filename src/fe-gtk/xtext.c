@@ -6784,45 +6784,82 @@ gtk_xtext_render_page (GtkXText * xtext)
 			accumulated = 0;
 			ent = NULL;
 			subline = 0;
-			for (walk = start_ent; walk; walk = walk->prev)
 			{
-				int contrib;
+				int total_above_delta = 0;
 
-				/* Reflow stale entries before using display_lines for positioning.
-				 * Only entries in the backward walk (~1 page) are touched, not all
-				 * materialized entries.  Without this, stale estimates cause the
-				 * walk to overcount lines and start rendering too close to the
-				 * anchor, leaving blank space at the bottom. */
-				if (walk->sublines_width != xtext->buffer->window_width)
+				for (walk = start_ent; walk; walk = walk->prev)
 				{
-					int old_dl = walk->display_lines;
-					gtk_xtext_lines_taken (xtext->buffer, walk);
-					if (walk->display_lines != old_dl && xtext->buffer->entry_tree)
+					int contrib;
+
+					/* Reflow stale entries before using display_lines for positioning.
+					 * Only entries in the backward walk (~1 page) are touched, not all
+					 * materialized entries.  Without this, stale estimates cause the
+					 * walk to overcount lines and start rendering too close to the
+					 * anchor, leaving blank space at the bottom. */
+					if (walk->sublines_width != xtext->buffer->window_width)
 					{
-						int delta = walk->display_lines - old_dl;
-						xtext->buffer->num_lines += delta;
-						update_weight234 (xtext->buffer->entry_tree, walk, delta);
+						int old_dl = walk->display_lines;
+						gtk_xtext_lines_taken (xtext->buffer, walk);
+						if (walk->display_lines != old_dl && xtext->buffer->entry_tree)
+						{
+							int delta = walk->display_lines - old_dl;
+							xtext->buffer->num_lines += delta;
+							update_weight234 (xtext->buffer->entry_tree, walk, delta);
+							/* Track only deltas from entries strictly ABOVE the
+							 * anchor (start_ent).  Those grow lines_before_start_ent
+							 * by delta and therefore push the anchor's absolute
+							 * line position down; we'll compensate adj->value
+							 * after the walk so the same content stays at the
+							 * bottom of the viewport.  start_ent's own delta
+							 * doesn't shift its anchor row, so it's excluded. */
+							if (walk != start_ent)
+								total_above_delta += delta;
+						}
+					}
+
+					/* For the start entry in free-scroll mode, only sublines
+					 * 0..start_sub are inside the viewport at this end; for all
+					 * other entries, the full display_lines count contributes. */
+					if (walk == start_ent && start_sub >= 0)
+						contrib = start_sub + 1;
+					else
+						contrib = ENT_DISPLAY_LINES (walk);
+
+					accumulated += contrib;
+					if (accumulated >= lines_needed)
+					{
+						ent = walk;
+						/* This entry's first visible subline is at the
+						 * (accumulated - lines_needed)-th position within its
+						 * contributing range, which (since contributing ranges
+						 * always start at subline 0) is also the subline index. */
+						subline = accumulated - lines_needed;
+						break;
 					}
 				}
 
-				/* For the start entry in free-scroll mode, only sublines
-				 * 0..start_sub are inside the viewport at this end; for all
-				 * other entries, the full display_lines count contributes. */
-				if (walk == start_ent && start_sub >= 0)
-					contrib = start_sub + 1;
-				else
-					contrib = ENT_DISPLAY_LINES (walk);
-
-				accumulated += contrib;
-				if (accumulated >= lines_needed)
+				/* If reflow grew (or shrank) entries above start_ent, the absolute
+				 * line number of start_ent's bot row shifted by total_above_delta.
+				 * Push adj->value/upper to match so the user's perceived viewport
+				 * doesn't jump on the next scroll/render — without this, scrolling
+				 * up into a previously-unrendered region (e.g. cert info) reflows
+				 * long entries placeholder→actual, and the walk's pagetop lands
+				 * closer to start_ent than the user expected. */
+				if (total_above_delta != 0)
 				{
-					ent = walk;
-					/* This entry's first visible subline is at the
-					 * (accumulated - lines_needed)-th position within its
-					 * contributing range, which (since contributing ranges
-					 * always start at subline 0) is also the subline index. */
-					subline = accumulated - lines_needed;
-					break;
+					gdouble cur_value = gtk_adjustment_get_value (xtext->adj);
+					gdouble new_value = cur_value + total_above_delta;
+					gdouble page = gtk_adjustment_get_page_size (xtext->adj);
+					gdouble new_upper = xtext->buffer->num_lines;
+
+					if (new_value > new_upper - page)
+						new_value = new_upper - page;
+					if (new_value < 0)
+						new_value = 0;
+
+					g_signal_handler_block (xtext->adj, xtext->vc_signal_tag);
+					gtk_adjustment_configure (xtext->adj, new_value, 0, new_upper, 1, page, page);
+					g_signal_handler_unblock (xtext->adj, xtext->vc_signal_tag);
 				}
 			}
 
