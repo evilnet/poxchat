@@ -6821,7 +6821,8 @@ gtk_xtext_render_page (GtkXText * xtext)
 			ent = NULL;
 			subline = 0;
 			{
-				int total_above_delta = 0;
+				int total_delta = 0;       /* every reflow's delta — drives adj->upper */
+				int total_above_delta = 0; /* deltas from entries strictly above start_ent — drives adj->value shift */
 
 				for (walk = start_ent; walk; walk = walk->prev)
 				{
@@ -6841,13 +6842,13 @@ gtk_xtext_render_page (GtkXText * xtext)
 							int delta = walk->display_lines - old_dl;
 							xtext->buffer->num_lines += delta;
 							update_weight234 (xtext->buffer->entry_tree, walk, delta);
-							/* Track only deltas from entries strictly ABOVE the
-							 * anchor (start_ent).  Those grow lines_before_start_ent
-							 * by delta and therefore push the anchor's absolute
-							 * line position down; we'll compensate adj->value
-							 * after the walk so the same content stays at the
-							 * bottom of the viewport.  start_ent's own delta
-							 * doesn't shift its anchor row, so it's excluded. */
+							total_delta += delta;
+							/* start_ent's own reflow grows num_lines (and so
+							 * adj->upper) but does NOT shift its anchor row's
+							 * absolute line position — that depends on entries
+							 * BEFORE start_ent, not start_ent itself.  Only
+							 * entries above start_ent contribute to the
+							 * adj->value shift. */
 							if (walk != start_ent)
 								total_above_delta += delta;
 						}
@@ -6874,14 +6875,14 @@ gtk_xtext_render_page (GtkXText * xtext)
 					}
 				}
 
-				/* If reflow grew (or shrank) entries above start_ent, the absolute
-				 * line number of start_ent's bot row shifted by total_above_delta.
-				 * Push adj->value/upper to match so the user's perceived viewport
-				 * doesn't jump on the next scroll/render — without this, scrolling
-				 * up into a previously-unrendered region (e.g. cert info) reflows
-				 * long entries placeholder→actual, and the walk's pagetop lands
-				 * closer to start_ent than the user expected. */
-				if (total_above_delta != 0)
+				/* Reconcile adj if any reflow happened during the walk.
+				 * - upper must reflect the new num_lines on every nonzero
+				 *   delta — otherwise adjustment_changed on the next scroll
+				 *   resolves bot_line against a stale upper and clamps the
+				 *   anchor to lm-1, jumping the view.
+				 * - value shifts only by total_above_delta — entries above
+				 *   start_ent push the anchor row's absolute line down. */
+				if (total_delta != 0)
 				{
 					gdouble cur_value = gtk_adjustment_get_value (xtext->adj);
 					gdouble new_value = cur_value + total_above_delta;
