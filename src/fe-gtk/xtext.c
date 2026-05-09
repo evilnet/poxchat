@@ -10223,27 +10223,32 @@ gtk_xtext_buffer_show (GtkXText *xtext, xtext_buffer *buf, int render)
 			gtk_adjustment_set_value (xtext->adj, 0);
 	}
 
+	/* Always reconcile width/indent state when the buffer is mounted.
+	 * mg_changesess clears the render flag whenever userlist visibility
+	 * flips (every channel<->server switch), but recalc_widths is state
+	 * work, not a draw — skipping it leaves buf->window_width stale and
+	 * the entries' sublines_width unmatched to the current viewport.
+	 * Only the queue_draw stays render-gated. */
+	if (buf->window_width != w || buf->last_indent != buf->indent)
+	{
+		gboolean width_changed = (buf->window_width != w);
+		buf->last_indent = buf->indent;
+		buf->window_width = w;
+		buf->window_height = h;
+		gtk_xtext_recalc_widths (buf, width_changed);
+		if (buf->scroll_anchor.anchor_to_bottom)
+			gtk_adjustment_set_value (xtext->adj, gtk_adjustment_get_upper (xtext->adj) -
+											  gtk_adjustment_get_page_size (xtext->adj));
+	} else if (buf->window_height != h)
+	{
+		buf->window_height = h;
+		if (buf->scroll_anchor.anchor_to_bottom)
+			gtk_adjustment_set_value (xtext->adj, gtk_adjustment_get_upper (xtext->adj));
+		gtk_xtext_adjustment_set (buf, FALSE);
+	}
+
 	if (render)
 	{
-		/* did the window change size or indent since this buffer was last shown? */
-		if (buf->window_width != w || buf->last_indent != buf->indent)
-		{
-			gboolean width_changed = (buf->window_width != w);
-			buf->last_indent = buf->indent;
-			buf->window_width = w;
-			buf->window_height = h;
-			gtk_xtext_recalc_widths (buf, width_changed);
-			if (buf->scroll_anchor.anchor_to_bottom)
-				gtk_adjustment_set_value (xtext->adj, gtk_adjustment_get_upper (xtext->adj) -
-												  gtk_adjustment_get_page_size (xtext->adj));
-		} else if (buf->window_height != h)
-		{
-			buf->window_height = h;
-			if (buf->scroll_anchor.anchor_to_bottom)
-				gtk_adjustment_set_value (xtext->adj, gtk_adjustment_get_upper (xtext->adj));
-			gtk_xtext_adjustment_set (buf, FALSE);
-		}
-
 		/* GTK3: Queue a redraw instead of rendering directly */
 		gtk_widget_queue_draw (GTK_WIDGET (xtext));
 	}
