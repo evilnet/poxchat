@@ -8895,7 +8895,42 @@ static void
 gtk_xtext_append_entry (xtext_buffer *buf, textentry * ent, time_t stamp)
 {
 	gtk_xtext_init_entry (buf, ent, stamp);
-	gtk_xtext_link_entry (buf, ent, LINK_TAIL);
+
+	/* Out-of-order arrival: if this entry's (stamp, id) sorts before
+	 * text_last, link it at the chronologically-correct position rather
+	 * than the tail.  The B-tree (sorted by stamp+id) places entries by
+	 * the comparator, but a tail-link puts a chronologically-older entry
+	 * after newer-stamped peers in the linked list.  render_page walks
+	 * back via prev pointers (list order) while gtk_xtext_nth resolves
+	 * via tree order — when the two diverge, pagetop is computed against
+	 * a different set of entries than nth picked, and the user sees a
+	 * scroll-up jump.  Common trigger: IRCv3 server-time tags that drift
+	 * from local time during connect (cert-info events vs server numerics).
+	 *
+	 * Fast-path stays O(1) for monotonic stamps (the typical case).
+	 * Out-of-order walks back from text_last; usually only a few entries
+	 * since drift is small. */
+	if (buf->text_last && entry_stamp_cmp (ent, buf->text_last) < 0)
+	{
+		textentry *pos = buf->text_last;
+		while (pos && entry_stamp_cmp (ent, pos) < 0)
+			pos = pos->prev;
+		if (pos == NULL)
+		{
+			ent->prev = NULL;
+			ent->next = buf->text_first;
+		}
+		else
+		{
+			ent->prev = pos;
+			ent->next = pos->next;
+		}
+		gtk_xtext_link_entry (buf, ent, LINK_BEFORE);
+	}
+	else
+	{
+		gtk_xtext_link_entry (buf, ent, LINK_TAIL);
+	}
 
 	/* Track DB-row count.  Only entries actually written to the DB
 	 * contribute — ephemerals (system messages, dedup-rejected duplicates)
