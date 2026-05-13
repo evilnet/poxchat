@@ -1,14 +1,14 @@
-name: AppImage Build
+name: Release
+
 on:
-  push:
-    branches:
-      - master
-  pull_request:
-    branches:
-      - master
+  release:
+    types: [published]
+
+permissions:
+  contents: write
 
 jobs:
-  appimage_build:
+  appimage:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -18,7 +18,7 @@ jobs:
       - name: Build AppImage in container
         run: ./linux/appimage/build-in-docker.sh
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload AppImage to release
+        uses: softprops/action-gh-release@v2
         with:
-          name: PoxChat-AppImage
-          path: PoxChat-x86_64.AppImage
+          files: PoxChat-x86_64.AppImage
