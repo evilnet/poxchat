@@ -151,7 +151,7 @@ undo_snapshot_free (gpointer data)
 }
 
 /* --- Margins/padding --- */
-#define HPAD 12		/* horizontal padding inside widget */
+#define HPAD 6		/* horizontal padding inside widget */
 #define VPAD 4		/* vertical padding inside widget */
 
 /* --- Caret blink interval (ms) --- */
