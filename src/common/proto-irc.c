@@ -47,6 +47,9 @@
 #include "servlist.h"
 
 static time_t parse_iso8601_to_time_t (const char *timestr);
+static void handle_markread_response (server *serv, const char *target,
+                                      const char *ts_param,
+                                      const message_tags_data *tags_data);
 
 static void
 irc_login (server *serv, char *user, char *realname)
@@ -1151,6 +1154,44 @@ process_numeric (session * sess, int n,
 	}
 }
 
+/* Apply a MARKREAD response from the server.
+ * Updates the session's stored marker and positions the visual marker line.
+ * Shared by the prefixed (process_named_msg) and prefix-less
+ * (process_named_servermsg) entry points. */
+static void
+handle_markread_response (server *serv, const char *target, const char *ts_param,
+                          const message_tags_data *tags_data)
+{
+	session *markread_sess;
+	const char *ts_value;
+	time_t parsed;
+
+	(void) tags_data;
+
+	if (!target || !*target)
+		return;
+
+	markread_sess = find_channel (serv, target);
+	if (!markread_sess)
+		markread_sess = find_dialog (serv, target);
+	if (!markread_sess)
+		return;
+
+	if (!ts_param || !*ts_param
+	    || strncmp (ts_param, "timestamp=", 10) != 0)
+		return;
+
+	ts_value = ts_param + 10;
+	parsed = parse_iso8601_to_time_t (ts_value);
+
+	g_free (markread_sess->markread_timestamp);
+	markread_sess->markread_timestamp = g_strdup (ts_value);
+	markread_sess->markread_time = (parsed != (time_t) -1) ? parsed : 0;
+
+	if (parsed != (time_t) -1)
+		fe_set_marker_from_timestamp (markread_sess, parsed);
+}
+
 /* handle named messages that starts with a ':' */
 
 static void
@@ -1752,34 +1793,7 @@ process_named_msg (session *sess, char *type, char *word[], char *word_eol[],
 			 * Format: :server MARKREAD <target> timestamp=<iso8601>
 			 */
 			if (len >= 8 && strncasecmp (type, "MARKREAD", 8) == 0)
-			{
-				char *target = word[3];
-				char *ts_param = word[4];
-				session *markread_sess;
-
-				if (!*target)
-					return;
-
-				markread_sess = find_channel (serv, target);
-				if (!markread_sess)
-					markread_sess = find_dialog (serv, target);
-
-				if (markread_sess && ts_param && *ts_param
-				    && strncmp (ts_param, "timestamp=", 10) == 0)
-				{
-					const char *ts_value = ts_param + 10;
-					time_t parsed = parse_iso8601_to_time_t (ts_value);
-
-					/* Store raw string for round-tripping back to server */
-					g_free (markread_sess->markread_timestamp);
-					markread_sess->markread_timestamp = g_strdup (ts_value);
-					markread_sess->markread_time = (parsed != (time_t) -1) ? parsed : 0;
-
-					/* Position the visual marker line */
-					if (parsed != (time_t) -1)
-						fe_set_marker_from_timestamp (markread_sess, parsed);
-				}
-			}
+				handle_markread_response (serv, word[3], word[4], tags_data);
 			return;
 
 		case WORDL('R','E','D','A'):
@@ -2008,6 +2022,25 @@ process_named_servermsg (session *sess, char *buf, char *rawname, char *word_eol
 	if (!strncmp (buf, "AUTHENTICATE", 12))
 	{
 		inbound_sasl_authenticate (sess->server, word_eol[2]);
+		return;
+	}
+	/* MARKREAD echo from servers that omit the source prefix.
+	 * Format: MARKREAD <target> [timestamp=<iso8601>]
+	 * word_eol[2] is "<target> timestamp=..." — split off the target. */
+	if (!strncasecmp (buf, "MARKREAD ", 9))
+	{
+		char *target = word_eol[2];
+		char *sp;
+		char *ts_param = NULL;
+
+		if (target && (sp = strchr (target, ' ')) != NULL)
+		{
+			*sp = '\0';
+			ts_param = sp + 1;
+			while (*ts_param == ' ')
+				ts_param++;
+		}
+		handle_markread_response (sess->server, target, ts_param, tags_data);
 		return;
 	}
 
