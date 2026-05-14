@@ -588,6 +588,24 @@ accel_button_key_cb (GtkEventControllerKey *controller, guint keyval,
 		return TRUE;
 	}
 
+	/* Ignore bare modifier presses — wait for the actual key.
+	 * Without this, pressing Alt or Ctrl on its own immediately ends
+	 * capture (with mod=0, since the modifier mask isn't set on the
+	 * keypress that *is* the modifier). */
+	switch (keyval)
+	{
+	case GDK_KEY_Shift_L: case GDK_KEY_Shift_R:
+	case GDK_KEY_Control_L: case GDK_KEY_Control_R:
+	case GDK_KEY_Alt_L: case GDK_KEY_Alt_R:
+	case GDK_KEY_Meta_L: case GDK_KEY_Meta_R:
+	case GDK_KEY_Super_L: case GDK_KEY_Super_R:
+	case GDK_KEY_Hyper_L: case GDK_KEY_Hyper_R:
+	case GDK_KEY_ISO_Level3_Shift: case GDK_KEY_ISO_Level5_Shift:
+	case GDK_KEY_Caps_Lock: case GDK_KEY_Shift_Lock:
+	case GDK_KEY_Num_Lock: case GDK_KEY_Scroll_Lock:
+		return TRUE;
+	}
+
 	/* Shift tab requires an exception */
 	if (keyval == GDK_KEY_Tab && state & GDK_SHIFT_MASK)
 		keyval = GDK_KEY_ISO_Left_Tab;
