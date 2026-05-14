@@ -1671,7 +1671,10 @@ fe_typing_update (session *sess)
 
 	if (!sess->typing_nicks)
 	{
-		gtk_xtext_status_remove (xtext, "typing");
+		/* Don't yank the strip out from under the scrollback the moment
+		 * typing stops — turn the item into a placeholder so the reserved
+		 * space stays until the next appended line sweeps it away. */
+		gtk_xtext_status_set_placeholder (xtext, "typing");
 	}
 	else
 	{

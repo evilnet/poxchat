@@ -73,6 +73,8 @@ typedef struct xtext_status_item {
 	gpointer dismiss_userdata;
 	int dismiss_x;       /* left edge of × button (set during render) */
 	int dismiss_w;       /* width of × button area */
+	unsigned int placeholder:1;  /* reserves strip space, draws no text;
+	                                swept on next append to visible buffer */
 } xtext_status_item;
 
 /* Top toast overlay notifications */
@@ -526,6 +528,10 @@ void gtk_xtext_end_group (xtext_buffer *buf);
 void gtk_xtext_status_set (GtkXText *xtext, const char *key, const char *text,
                            int priority, int timeout_ms);
 void gtk_xtext_status_remove (GtkXText *xtext, const char *key);
+/* Convert an existing item into a placeholder: keeps the strip's reserved
+ * space but draws no text. Swept automatically when a new line is appended
+ * to the visible buffer. No-op if the key has no current item. */
+void gtk_xtext_status_set_placeholder (GtkXText *xtext, const char *key);
 void gtk_xtext_status_set_dismiss (GtkXText *xtext, const char *key,
                                    void (*cb) (GtkXText *, const char *, gpointer),
                                    gpointer userdata);

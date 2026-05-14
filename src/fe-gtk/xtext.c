@@ -306,6 +306,16 @@ static int gtk_xtext_auto_indent_cap (xtext_buffer *buf);
 static gboolean gtk_xtext_clamp_indent_to_width (xtext_buffer *buf);
 static int gtk_xtext_find_subline (GtkXText *xtext, textentry *ent, int line);
 static void gtk_xtext_draw_status_strip (GtkXText *xtext, int width, int height);
+
+/* Bottom status strip occupies exactly one chat-line of height so it visually
+ * takes the place of the last line in the buffer.  fontsize already includes
+ * the inter-line gap (set at xtext_set_font from pango_font_metrics_get_height
+ * + 1), so no padding is added here. */
+static inline int
+gtk_xtext_status_strip_height (GtkXText *xtext)
+{
+	return xtext->fontsize;
+}
 static void gtk_xtext_draw_toasts (GtkXText *xtext, int width, int height);
 static gboolean gtk_xtext_toast_tick (gpointer data);
 static int gtk_xtext_measure_reaction_badges (GtkXText *xtext, struct xtext_reactions_info *ri, int win_width);
@@ -944,7 +954,7 @@ gtk_xtext_adjustment_set (xtext_buffer *buf, int fire_signal)
 		{
 			int effective_height = widget_height;
 			if (buf->xtext->status_strip_visible)
-				effective_height -= (buf->xtext->fontsize * 2 / 3 + 4);
+				effective_height -= gtk_xtext_status_strip_height (buf->xtext);
 			/* Integer page_size: a fractional page_size makes upper - page_size
 			 * fractional, which makes value fractional, which makes
 			 * pixel_offset = (value - (int)value) * fontsize non-zero — the
@@ -3742,7 +3752,7 @@ gtk_xtext_button_press (GtkGestureClick *gesture, int n_press, double event_x, d
 	if (n_press == 1 && xtext->status_strip_visible)
 	{
 		int height = gtk_widget_get_height (GTK_WIDGET (xtext));
-		int strip_h = xtext->fontsize * 2 / 3 + 4;
+		int strip_h = gtk_xtext_status_strip_height (xtext);
 		int strip_y = height - strip_h;
 
 		if (y >= strip_y)
@@ -6842,7 +6852,7 @@ gtk_xtext_render_page (GtkXText * xtext)
 		gboolean use_bottom_anchor;
 
 		if (xtext->status_strip_visible)
-			effective_height -= (xtext->fontsize * 2 / 3 + 4);
+			effective_height -= gtk_xtext_status_strip_height (xtext);
 
 		/* "At top" is encoded by anchor_entry_id == 0 with no bottom pin.
 		 * Fall back to checking adj->value for the very first render
@@ -7034,7 +7044,7 @@ top_down:
 	{
 		int text_height = height;
 		if (xtext->status_strip_visible)
-			text_height -= (xtext->fontsize * 2 / 3 + 4);
+			text_height -= gtk_xtext_status_strip_height (xtext);
 		lines_max = ((text_height + xtext->pixel_offset) / xtext->fontsize) + 1;
 	}
 
@@ -7153,7 +7163,7 @@ status_item_cmp_priority (const void *a, const void *b)
 static void
 gtk_xtext_draw_status_strip (GtkXText *xtext, int width, int height)
 {
-	int strip_h = xtext->fontsize * 2 / 3 + 4;
+	int strip_h = gtk_xtext_status_strip_height (xtext);
 	int y = height - strip_h;
 	cairo_t *cr = xtext->cr;
 	PangoLayout *layout;
@@ -7167,10 +7177,13 @@ gtk_xtext_draw_status_strip (GtkXText *xtext, int width, int height)
 	if (!cr || xtext->status_item_count == 0)
 		return;
 
-	/* Partition items into left/right zones */
+	/* Partition items into left/right zones. Placeholder items hold the
+	 * strip's reserved space but contribute no text, so skip them here. */
 	for (i = 0; i < xtext->status_item_count; i++)
 	{
 		xtext_status_item *item = &xtext->status_items[i];
+		if (item->placeholder)
+			continue;
 		if (item->priority >= XTEXT_STATUS_PRIORITY_RIGHT)
 			right_items[right_count++] = item;
 		else
@@ -7379,6 +7392,7 @@ gtk_xtext_status_set (GtkXText *xtext, const char *key, const char *text,
 		g_free (item->display_text);
 		item->display_text = g_strdup (text);
 		item->priority = priority;
+		item->placeholder = 0;
 	}
 	else
 	{
@@ -7388,6 +7402,7 @@ gtk_xtext_status_set (GtkXText *xtext, const char *key, const char *text,
 		item->key = g_strdup (key);
 		item->display_text = g_strdup (text);
 		item->priority = priority;
+		item->placeholder = 0;
 	}
 
 	if (timeout_ms > 0)
@@ -7447,6 +7462,64 @@ gtk_xtext_status_remove (GtkXText *xtext, const char *key)
 		memmove (&xtext->status_items[idx], &xtext->status_items[idx + 1],
 		         sizeof (xtext_status_item) * (xtext->status_item_count - 1 - idx));
 	xtext->status_item_count--;
+	{
+		gboolean was_visible = xtext->status_strip_visible;
+		xtext->status_strip_visible = (xtext->status_item_count > 0);
+		if (was_visible != xtext->status_strip_visible)
+		{
+			gtk_xtext_adjustment_set (xtext->buffer, TRUE);
+			if (xtext->buffer->scroll_anchor.anchor_to_bottom)
+				gtk_adjustment_set_value (xtext->adj,
+					gtk_adjustment_get_upper (xtext->adj) -
+					gtk_adjustment_get_page_size (xtext->adj));
+		}
+	}
+	gtk_widget_queue_draw (GTK_WIDGET (xtext));
+}
+
+void
+gtk_xtext_status_set_placeholder (GtkXText *xtext, const char *key)
+{
+	int idx = xtext_status_find (xtext, key);
+	xtext_status_item *item;
+
+	if (idx < 0)
+		return;
+
+	item = &xtext->status_items[idx];
+	item->placeholder = 1;
+	g_free (item->display_text);
+	item->display_text = g_strdup ("");
+	item->expire_at = 0;
+	item->dismiss_cb = NULL;
+	item->dismiss_userdata = NULL;
+	item->dismiss_x = 0;
+	item->dismiss_w = 0;
+	gtk_widget_queue_draw (GTK_WIDGET (xtext));
+}
+
+static void
+xtext_status_sweep_placeholders (GtkXText *xtext)
+{
+	int i;
+	gboolean changed = FALSE;
+
+	for (i = xtext->status_item_count - 1; i >= 0; i--)
+	{
+		if (!xtext->status_items[i].placeholder)
+			continue;
+		g_free (xtext->status_items[i].key);
+		g_free (xtext->status_items[i].display_text);
+		if (i < xtext->status_item_count - 1)
+			memmove (&xtext->status_items[i], &xtext->status_items[i + 1],
+			         sizeof (xtext_status_item) * (xtext->status_item_count - 1 - i));
+		xtext->status_item_count--;
+		changed = TRUE;
+	}
+
+	if (!changed)
+		return;
+
 	{
 		gboolean was_visible = xtext->status_strip_visible;
 		xtext->status_strip_visible = (xtext->status_item_count > 0);
@@ -9072,6 +9145,13 @@ gtk_xtext_append_entry (xtext_buffer *buf, textentry * ent, time_t stamp)
 															gtk_xtext_render_page_timeout,
 															buf->xtext);
 		}
+
+		/* A new line in the visible buffer is the trigger to release any
+		 * status-strip space held open by placeholder items (e.g. the
+		 * typing indicator after the last typer stops). This avoids the
+		 * jarring vertical jump that would happen if the strip vanished
+		 * the instant typing ended. */
+		xtext_status_sweep_placeholders (buf->xtext);
 	}
 	if (buf->search_flags & follow)
 	{
