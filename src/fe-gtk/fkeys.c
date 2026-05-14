@@ -159,14 +159,14 @@ hc_completion_free (HcCompletion *comp)
  */
 
 /* Remember that the *number* of actions is this *plus* 1 --AGL */
-#define KEY_MAX_ACTIONS 14
+#define KEY_MAX_ACTIONS 16
 
 struct key_binding
 {
 	guint keyval;					  /* keyval from gdk */
 	GdkModifierType mod;			  /* Modifier, always ran through key_modifier_get_valid() */
 	int action;						  /* Index into key_actions */
-	char *data1, *data2;			  /* Pointers to strings, these must be freed */
+	char *data1;					  /* Pointer to string, must be freed */
 };
 
 /*
@@ -225,6 +225,10 @@ static int key_action_move_tab_family_right (GtkWidget *wid, void *evt,
                                              char *d1, char *d2, struct session *sess);
 static int key_action_put_history (GtkWidget *wid, void *evt,
                                    char *d1, char *d2, struct session *sess);
+static int key_action_next_tab (GtkWidget *wid, void *evt,
+                                char *d1, char *d2, struct session *sess);
+static int key_action_prev_tab (GtkWidget *wid, void *evt,
+                                char *d1, char *d2, struct session *sess);
 
 static GSList *keybind_list = NULL;
 
@@ -232,8 +236,8 @@ static const struct key_action key_actions[KEY_MAX_ACTIONS + 1] = {
 
 	{key_action_handle_command, "Run Command",
 	 N_("The \002Run Command\002 action runs the data in Data 1 as if it had been typed into the entry box where you pressed the key sequence. Thus it can contain text (which will be sent to the channel/person), commands or user commands. When run all \002\\n\002 characters in Data 1 are used to deliminate separate commands so it is possible to run more than one command. If you want a \002\\\002 in the actual text run then enter \002\\\\\002")},
-	{key_action_page_switch, "Change Page",
-	 N_("The \002Change Page\002 command switches between pages in the notebook. Set Data 1 to the page you want to switch to. If Data 2 is set to anything then the switch will be relative to the current position. Set Data 1 to auto to switch to the page with the most recent and important activity (queries first, then channels with hilight, channels with dialogue, channels with other data)")},
+	{key_action_page_switch, "Change Tab",
+	 N_("The \002Change Tab\002 command switches between tabs. Set Data 1 to an absolute tab number (e.g. 3), or to a signed offset (e.g. +1, -1) for a relative jump. Set Data 1 to auto to switch to the tab with the most recent and important activity (queries first, then channels with hilight, channels with dialogue, channels with other data). For plain previous/next tab, use the dedicated \002Previous Tab\002 / \002Next Tab\002 actions instead.")},
 	{key_action_insert, "Insert in Buffer",
 	 N_("The \002Insert in Buffer\002 command will insert the contents of Data 1 into the entry where the key sequence was pressed at the current cursor position")},
 	{key_action_scroll_page, "Scroll Page",
@@ -260,48 +264,52 @@ static const struct key_action key_actions[KEY_MAX_ACTIONS + 1] = {
 	 N_("This command moves the current tab family to the right")},
 	{key_action_put_history, "Push input line into history",
 	 N_("Push input line into history but doesn't send to server")},
+	{key_action_next_tab, "Next Tab",
+	 N_("Switch to the next tab. No data fields needed.")},
+	{key_action_prev_tab, "Previous Tab",
+	 N_("Switch to the previous tab. No data fields needed.")},
 };
 
 #define default_kb_cfg \
-	"ACCEL=<Primary>Page_Up\nChange Page\nD1:-1\nD2:Relative\n\n"\
-	"ACCEL=<Primary>Page_Down\nChange Page\nD1:1\nD2:Relative\n\n"\
-	"ACCEL=<Alt>9\nChange Page\nD1:9\nD2!\n\n"\
-	"ACCEL=<Alt>8\nChange Page\nD1:8\nD2!\n\n"\
-	"ACCEL=<Alt>7\nChange Page\nD1:7\nD2!\n\n"\
-	"ACCEL=<Alt>6\nChange Page\nD1:6\nD2!\n\n"\
-	"ACCEL=<Alt>5\nChange Page\nD1:5\nD2!\n\n"\
-	"ACCEL=<Alt>4\nChange Page\nD1:4\nD2!\n\n"\
-	"ACCEL=<Alt>3\nChange Page\nD1:3\nD2!\n\n"\
-	"ACCEL=<Alt>2\nChange Page\nD1:2\nD2!\n\n"\
-	"ACCEL=<Alt>1\nChange Page\nD1:1\nD2!\n\n"\
-	"ACCEL=<Alt>grave\nChange Page\nD1:auto\nD2!\n\n"\
-	"ACCEL=<Primary>o\nInsert in Buffer\nD1:\017\nD2!\n\n"\
-	"ACCEL=<Primary>b\nInsert in Buffer\nD1:\002\nD2!\n\n"\
-	"ACCEL=<Primary>k\nInsert in Buffer\nD1:\003\nD2!\n\n"\
-	"ACCEL=<Primary>i\nInsert in Buffer\nD1:\035\nD2!\n\n"\
-	"ACCEL=<Primary>u\nInsert in Buffer\nD1:\037\nD2!\n\n"\
-	"ACCEL=<Primary>r\nInsert in Buffer\nD1:\026\nD2!\n\n"\
-	"ACCEL=<Shift>Page_Down\nChange Selected Nick\nD1!\nD2!\n\n"\
-	"ACCEL=<Shift>Page_Up\nChange Selected Nick\nD1:Up\nD2!\n\n"\
-	"ACCEL=Page_Down\nScroll Page\nD1:Down\nD2!\n\n"\
-	"ACCEL=<Primary>Home\nScroll Page\nD1:Top\nD2!\n\n"\
-	"ACCEL=<Primary>End\nScroll Page\nD1:Bottom\nD2!\n\n"\
-	"ACCEL=Page_Up\nScroll Page\nD1:Up\nD2!\n\n"\
-	"ACCEL=<Shift>Down\nScroll Page\nD1:+1\nD2!\n\n"\
-	"ACCEL=<Shift>Up\nScroll Page\nD1:-1\nD2!\n\n"\
-	"ACCEL=Down\nNext Command\nD1!\nD2!\n\n"\
-	"ACCEL=Up\nLast Command\nD1!\nD2!\n\n"\
-	"ACCEL=Tab\nComplete nick/command\nD1!\nD2!\n\n"\
-	"ACCEL=<Shift>ISO_Left_Tab\nComplete nick/command\nD1:Previous\nD2!\n\n"\
-	"ACCEL=space\nCheck For Replace\nD1!\nD2!\n\n"\
-	"ACCEL=Return\nCheck For Replace\nD1!\nD2!\n\n"\
-	"ACCEL=KP_Enter\nCheck For Replace\nD1!\nD2!\n\n"\
-	"ACCEL=<Primary>Tab\nComplete nick/command\nD1:Up\nD2!\n\n"\
-	"ACCEL=<Alt>Left\nMove front tab left\nD1!\nD2!\n\n"\
-	"ACCEL=<Alt>Right\nMove front tab right\nD1!\nD2!\n\n"\
-	"ACCEL=<Primary><Shift>Page_Up\nMove tab family left\nD1!\nD2!\n\n"\
-	"ACCEL=<Primary><Shift>Page_Down\nMove tab family right\nD1!\nD2!\n\n"\
-	"ACCEL=F9\nRun Command\nD1:/GUI MENU TOGGLE\nD2!\n\n"
+	"ACCEL=<Primary>Page_Up\nPrevious Tab\nD1!\n\n"\
+	"ACCEL=<Primary>Page_Down\nNext Tab\nD1!\n\n"\
+	"ACCEL=<Alt>9\nChange Tab\nD1:9\n\n"\
+	"ACCEL=<Alt>8\nChange Tab\nD1:8\n\n"\
+	"ACCEL=<Alt>7\nChange Tab\nD1:7\n\n"\
+	"ACCEL=<Alt>6\nChange Tab\nD1:6\n\n"\
+	"ACCEL=<Alt>5\nChange Tab\nD1:5\n\n"\
+	"ACCEL=<Alt>4\nChange Tab\nD1:4\n\n"\
+	"ACCEL=<Alt>3\nChange Tab\nD1:3\n\n"\
+	"ACCEL=<Alt>2\nChange Tab\nD1:2\n\n"\
+	"ACCEL=<Alt>1\nChange Tab\nD1:1\n\n"\
+	"ACCEL=<Alt>grave\nChange Tab\nD1:auto\n\n"\
+	"ACCEL=<Primary>o\nInsert in Buffer\nD1:\017\n\n"\
+	"ACCEL=<Primary>b\nInsert in Buffer\nD1:\002\n\n"\
+	"ACCEL=<Primary>k\nInsert in Buffer\nD1:\003\n\n"\
+	"ACCEL=<Primary>i\nInsert in Buffer\nD1:\035\n\n"\
+	"ACCEL=<Primary>u\nInsert in Buffer\nD1:\037\n\n"\
+	"ACCEL=<Primary>r\nInsert in Buffer\nD1:\026\n\n"\
+	"ACCEL=<Shift>Page_Down\nChange Selected Nick\nD1!\n\n"\
+	"ACCEL=<Shift>Page_Up\nChange Selected Nick\nD1:Up\n\n"\
+	"ACCEL=Page_Down\nScroll Page\nD1:Down\n\n"\
+	"ACCEL=<Primary>Home\nScroll Page\nD1:Top\n\n"\
+	"ACCEL=<Primary>End\nScroll Page\nD1:Bottom\n\n"\
+	"ACCEL=Page_Up\nScroll Page\nD1:Up\n\n"\
+	"ACCEL=<Shift>Down\nScroll Page\nD1:+1\n\n"\
+	"ACCEL=<Shift>Up\nScroll Page\nD1:-1\n\n"\
+	"ACCEL=Down\nNext Command\nD1!\n\n"\
+	"ACCEL=Up\nLast Command\nD1!\n\n"\
+	"ACCEL=Tab\nComplete nick/command\nD1!\n\n"\
+	"ACCEL=<Shift>ISO_Left_Tab\nComplete nick/command\nD1:Previous\n\n"\
+	"ACCEL=space\nCheck For Replace\nD1!\n\n"\
+	"ACCEL=Return\nCheck For Replace\nD1!\n\n"\
+	"ACCEL=KP_Enter\nCheck For Replace\nD1!\n\n"\
+	"ACCEL=<Primary>Tab\nComplete nick/command\nD1:Up\n\n"\
+	"ACCEL=<Alt>Left\nMove front tab left\nD1!\n\n"\
+	"ACCEL=<Alt>Right\nMove front tab right\nD1!\n\n"\
+	"ACCEL=<Primary><Shift>Page_Up\nMove tab family left\nD1!\n\n"\
+	"ACCEL=<Primary><Shift>Page_Down\nMove tab family right\nD1!\n\n"\
+	"ACCEL=F9\nRun Command\nD1:/GUI MENU TOGGLE\n\n"
 
 void
 key_init ()
@@ -317,6 +325,10 @@ static inline int
 key_get_action_from_string (char *text)
 {
 	int i;
+
+	/* Legacy alias: "Change Page" was renamed to "Change Tab". */
+	if (strcmp (text, "Change Page") == 0)
+		text = "Change Tab";
 
 	for (i = 0; i < KEY_MAX_ACTIONS + 1; i++)
 	{
@@ -337,7 +349,6 @@ key_free (gpointer data)
 	g_return_if_fail (kb != NULL);
 
 	g_free (kb->data1);
-	g_free (kb->data2);
 	g_free (kb);
 }
 
@@ -440,9 +451,10 @@ key_handle_key_press (GtkEventControllerKey *controller, guint keyval,
 			if (kb->action < 0 || kb->action > KEY_MAX_ACTIONS)
 				return 0;
 
-			/* Run the function - pass NULL for evt in GTK4 since handlers don't use it */
+			/* Run the function - pass NULL for evt in GTK4 since handlers don't use it.
+			 * d2 is no longer stored; pass NULL for back-compat with the shared signature. */
 			n = key_actions[kb->action].handler (wid, NULL, kb->data1,
-															 kb->data2, sess);
+															 NULL, sess);
 			switch (n)
 			{
 			case 0:
@@ -498,7 +510,6 @@ struct _HcKeyBindingItem {
 	GdkModifierType mod;
 	int action;
 	char *data1;
-	char *data2;
 };
 
 G_DEFINE_TYPE (HcKeyBindingItem, hc_key_binding_item, G_TYPE_OBJECT)
@@ -508,7 +519,6 @@ hc_key_binding_item_finalize (GObject *obj)
 {
 	HcKeyBindingItem *item = HC_KEY_BINDING_ITEM (obj);
 	g_free (item->data1);
-	g_free (item->data2);
 	G_OBJECT_CLASS (hc_key_binding_item_parent_class)->finalize (obj);
 }
 
@@ -516,14 +526,13 @@ static void hc_key_binding_item_class_init (HcKeyBindingItemClass *klass) { G_OB
 static void hc_key_binding_item_init (HcKeyBindingItem *item) { }
 
 static HcKeyBindingItem *
-hc_key_binding_item_new (guint keyval, GdkModifierType mod, int action, const char *data1, const char *data2)
+hc_key_binding_item_new (guint keyval, GdkModifierType mod, int action, const char *data1)
 {
 	HcKeyBindingItem *item = g_object_new (HC_TYPE_KEY_BINDING_ITEM, NULL);
 	item->keyval = keyval;
 	item->mod = mod;
 	item->action = action;
 	item->data1 = g_strdup (data1 ? data1 : "");
-	item->data2 = g_strdup (data2 ? data2 : "");
 	return item;
 }
 
@@ -742,7 +751,7 @@ action_col_unbind_cb (GtkListItemFactory *factory, GtkListItem *list_item, gpoin
 	g_signal_handlers_disconnect_by_func (dropdown, action_col_changed_cb, list_item);
 }
 
-/* --- Data1/Data2 column factories --- */
+/* --- Data1 column factory --- */
 
 static GtkEditableLabel *keydlg_editing_label = NULL;
 
@@ -755,18 +764,6 @@ data1_changed_cb (GtkEditableLabel *label, GParamSpec *pspec, gpointer user_data
 	{
 		g_free (item->data1);
 		item->data1 = g_strdup (gtk_editable_get_text (GTK_EDITABLE (label)));
-	}
-}
-
-static void
-data2_changed_cb (GtkEditableLabel *label, GParamSpec *pspec, gpointer user_data)
-{
-	GtkListItem *list_item = GTK_LIST_ITEM (user_data);
-	HcKeyBindingItem *item = gtk_list_item_get_item (list_item);
-	if (item && gtk_editable_label_get_editing (GTK_EDITABLE_LABEL (label)))
-	{
-		g_free (item->data2);
-		item->data2 = g_strdup (gtk_editable_get_text (GTK_EDITABLE (label)));
 	}
 }
 
@@ -791,29 +788,6 @@ data1_unbind_cb (GtkListItemFactory *factory, GtkListItem *list_item, gpointer u
 {
 	GtkWidget *label = gtk_list_item_get_child (list_item);
 	g_signal_handlers_disconnect_by_func (label, data1_changed_cb, list_item);
-}
-
-static void
-data2_setup_cb (GtkListItemFactory *factory, GtkListItem *list_item, gpointer user_data)
-{
-	GtkWidget *label = hc_editable_label_new (list_item, &keydlg_editing_label);
-	gtk_list_item_set_child (list_item, label);
-}
-
-static void
-data2_bind_cb (GtkListItemFactory *factory, GtkListItem *list_item, gpointer user_data)
-{
-	GtkWidget *label = gtk_list_item_get_child (list_item);
-	HcKeyBindingItem *item = gtk_list_item_get_item (list_item);
-	gtk_editable_set_text (GTK_EDITABLE (label), item->data2 ? item->data2 : "");
-	g_signal_connect (label, "notify::text", G_CALLBACK (data2_changed_cb), list_item);
-}
-
-static void
-data2_unbind_cb (GtkListItemFactory *factory, GtkListItem *list_item, gpointer user_data)
-{
-	GtkWidget *label = gtk_list_item_get_child (list_item);
-	g_signal_handlers_disconnect_by_func (label, data2_changed_cb, list_item);
 }
 
 /* --- Selection changed: update help text --- */
@@ -936,7 +910,6 @@ key_dialog_save (GtkWidget *wid, gpointer userdata)
 		kb->mod = item->mod;
 		kb->action = item->action;
 		kb->data1 = g_strdup (item->data1 ? item->data1 : "");
-		kb->data2 = g_strdup (item->data2 ? item->data2 : "");
 
 		keybind_list = g_slist_append (keybind_list, kb);
 		g_object_unref (item);
@@ -953,7 +926,7 @@ key_dialog_add (GtkWidget *wid, gpointer userdata)
 	HcKeyBindingItem *item;
 	guint n;
 
-	item = hc_key_binding_item_new (0, 0, 0, "", "");
+	item = hc_key_binding_item_new (0, 0, 0, "");
 	g_list_store_append (key_store, item);
 	g_object_unref (item);
 
@@ -1019,19 +992,11 @@ key_dialog_treeview_new (GtkWidget *box)
 	gtk_column_view_column_set_fixed_width (col, 200);
 	gtk_column_view_column_set_resizable (col, TRUE);
 
-	/* Data1 column */
-	col = hc_column_view_add_column (GTK_COLUMN_VIEW (view), _("Data 1"),
+	/* Data column */
+	col = hc_column_view_add_column (GTK_COLUMN_VIEW (view), _("Data"),
 	                                  G_CALLBACK (data1_setup_cb),
 	                                  G_CALLBACK (data1_bind_cb),
 	                                  G_CALLBACK (data1_unbind_cb), NULL);
-	gtk_column_view_column_set_expand (col, TRUE);
-	gtk_column_view_column_set_resizable (col, TRUE);
-
-	/* Data2 column */
-	col = hc_column_view_add_column (GTK_COLUMN_VIEW (view), _("Data 2"),
-	                                  G_CALLBACK (data2_setup_cb),
-	                                  G_CALLBACK (data2_bind_cb),
-	                                  G_CALLBACK (data2_unbind_cb), NULL);
 	gtk_column_view_column_set_expand (col, TRUE);
 	gtk_column_view_column_set_resizable (col, TRUE);
 
@@ -1064,7 +1029,7 @@ key_dialog_load (void)
 		struct key_binding *kb = (struct key_binding *)list->data;
 		HcKeyBindingItem *item = hc_key_binding_item_new (
 			kb->keyval, kb->mod, kb->action,
-			kb->data1, kb->data2);
+			kb->data1);
 		g_list_store_append (key_store, item);
 		g_object_unref (item);
 		list = g_slist_next (list);
@@ -1152,11 +1117,6 @@ key_save_kbs (void)
 		else
 			HC_IGNORE_RESULT (write (fd, "D1!\n", 4));
 
-		if (kb->data2 && kb->data2[0])
-			HC_IGNORE_RESULT (write (fd, buf, g_snprintf (buf, 510, "D2:%s\n", kb->data2)));
-		else
-			HC_IGNORE_RESULT (write (fd, "D2!\n", 4));
-
 		HC_IGNORE_RESULT (write (fd, "\n", 1));
 
 		list = g_slist_next (list);
@@ -1170,7 +1130,9 @@ key_save_kbs (void)
 #define KBSTATE_KEY 1
 #define KBSTATE_ACT 2
 #define KBSTATE_DT1 3
-#define KBSTATE_DT2 4
+/* Legacy state: silently consume the D2 line if old configs still have one,
+ * and migrate Change Tab + non-empty D2 (= "Relative") to a signed D1 value. */
+#define KBSTATE_DT2_LEGACY 4
 
 #define STRIP_WHITESPACE \
 	while (buf[0] == ' ' || buf[0] == '\t') \
@@ -1223,10 +1185,15 @@ key_load_kbs (void)
 	char *buf, *ibuf;
 	struct stat st;
 	struct key_binding *kb = NULL;
+	struct key_binding *last_kb = NULL;
 	int fd, len, state = 0, pnt = 0;
+	int change_tab_idx;
+	gboolean reprocess = FALSE;
 	guint keyval;
 	GdkModifierType mod = 0;
 	off_t size;
+
+	change_tab_idx = key_get_action_from_string ("Change Tab");
 
 	fd = poxchat_open_file ("keybindings.conf", O_RDONLY, 0, 0);
 	if (fd < 0)
@@ -1254,8 +1221,10 @@ key_load_kbs (void)
 		keybind_list = NULL;
 	}
 
-	while (buf_get_line (ibuf, &buf, &pnt, size))
+	while (reprocess || buf_get_line (ibuf, &buf, &pnt, size))
 	{
+		reprocess = FALSE;
+
 		if (buf[0] == '#')
 			continue;
 		if (strlen (buf) == 0)
@@ -1319,64 +1288,60 @@ key_load_kbs (void)
 			continue;
 
 		case KBSTATE_DT1:
-		case KBSTATE_DT2:
-			if (state == KBSTATE_DT1)
-				kb->data1 = kb->data2 = NULL;
+			kb->data1 = NULL;
 
 			while (buf[0] == ' ' || buf[0] == '\t')
 				buf++;
 
-			if (buf[0] != 'D')
+			if (buf[0] != 'D' || buf[1] != '1')
 			{
 				g_free (ibuf);
 				return 4;
 			}
 
-			switch (buf[1])
-			{
-			case '1':
-				if (state != KBSTATE_DT1)
-					goto corrupt_file;
-				break;
-			case '2':
-				if (state != KBSTATE_DT2)
-					goto corrupt_file;
-				break;
-			default:
-				goto corrupt_file;
-			}
-
 			if (buf[2] == ':')
 			{
 				len = strlen (buf);
-				/* Add one for the NULL, subtract 3 for the "Dx:" */
+				/* Add one for the NULL, subtract 3 for the "D1:" */
 				len++;
 				len -= 3;
-				if (state == KBSTATE_DT1)
+				kb->data1 = g_strndup (&buf[3], len);
+			}
+			/* "D1!" leaves data1 as NULL */
+
+			keybind_list = g_slist_append (keybind_list, kb);
+			last_kb = kb;
+			kb = NULL;
+			state = KBSTATE_DT2_LEGACY;
+			continue;
+
+		case KBSTATE_DT2_LEGACY:
+			while (buf[0] == ' ' || buf[0] == '\t')
+				buf++;
+
+			if (buf[0] == 'D' && buf[1] == '2')
+			{
+				/* Legacy D2 line. Migrate Change Tab entries: a non-empty
+				 * D2 (historically "Relative") meant the D1 number was a
+				 * relative offset. Express that as a signed D1 instead. */
+				if (last_kb && last_kb->action == change_tab_idx
+				    && buf[2] == ':' && buf[3] != 0
+				    && last_kb->data1 && last_kb->data1[0]
+				    && last_kb->data1[0] != '+'
+				    && last_kb->data1[0] != '-'
+				    && last_kb->data1[0] >= '0' && last_kb->data1[0] <= '9')
 				{
-					kb->data1 = g_strndup (&buf[3], len);
-				} else
-				{
-					kb->data2 = g_strndup (&buf[3], len);
+					char *new_d1 = g_strdup_printf ("+%s", last_kb->data1);
+					g_free (last_kb->data1);
+					last_kb->data1 = new_d1;
 				}
-			} else if (buf[2] == '!')
-			{
-				if (state == KBSTATE_DT1)
-					kb->data1 = NULL;
-				else
-					kb->data2 = NULL;
-			}
-			if (state == KBSTATE_DT1)
-			{
-				state = KBSTATE_DT2;
-				continue;
-			} else
-			{
-				keybind_list = g_slist_append (keybind_list, kb);
-
 				state = KBSTATE_MOD;
+				continue;
 			}
 
+			/* No D2 line — current line belongs to the next entry. */
+			state = KBSTATE_MOD;
+			reprocess = TRUE;
 			continue;
 		}
 	}
@@ -1453,6 +1418,7 @@ key_action_page_switch (GtkWidget * wid, KEY_EVENT_PARAM, char *d1,
 {
 	session *newsess;
 	int len, i, num;
+	gboolean relative;
 
 	if (!d1)
 		return 1;
@@ -1496,13 +1462,12 @@ key_action_page_switch (GtkWidget * wid, KEY_EVENT_PARAM, char *d1,
 		}
 	}
 
+	/* Sign prefix (+/-) means relative; bare number means absolute. */
+	relative = (d1[0] == '+' || d1[0] == '-');
 	num = atoi (d1);
-	if (!d2)
+	if (!relative)
 		num--;
-	if (!d2 || d2[0] == 0)
-		mg_switch_page (FALSE, num);
-	else
-		mg_switch_page (TRUE, num);
+	mg_switch_page (relative, num);
 	return 0;
 }
 
@@ -2067,6 +2032,22 @@ key_action_put_history (GtkWidget * wid, KEY_EVENT_PARAM, char *d1,
 	history_add (&sess->history, SPELL_ENTRY_GET_TEXT (wid));
 	SPELL_ENTRY_SET_TEXT (wid, "");
 	return 2;						  /* -''- */
+}
+
+static int
+key_action_next_tab (GtkWidget * wid, KEY_EVENT_PARAM, char *d1,
+                     char *d2, struct session *sess)
+{
+	mg_switch_page (TRUE, 1);
+	return 0;
+}
+
+static int
+key_action_prev_tab (GtkWidget * wid, KEY_EVENT_PARAM, char *d1,
+                     char *d2, struct session *sess)
+{
+	mg_switch_page (TRUE, -1);
+	return 0;
 }
 
 
