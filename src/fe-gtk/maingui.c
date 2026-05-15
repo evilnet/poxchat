@@ -2803,7 +2803,10 @@ mg_react_emoji_picked_cb (GtkWidget *chooser, const char *emoji, gpointer user_d
 	}
 
 	if (sess)
+	{
 		g_clear_pointer (&sess->react_target_msgid, g_free);
+		mg_focus (sess);
+	}
 }
 
 /* Hover react-emoji button clicked — open emoji picker */
@@ -2900,6 +2903,8 @@ mg_reaction_click_cb (GtkXText *xtext, const char *msgid, const char *reaction_t
 		handle_command (sess, cmd, FALSE);
 		g_free (cmd);
 	}
+
+	mg_focus (sess);
 }
 
 /* mouse click inside text area */
