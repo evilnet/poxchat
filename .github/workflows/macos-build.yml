@@ -1,0 +1,57 @@
+name: macOS Build
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  macos_build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          brew update
+          brew install \
+            meson \
+            ninja \
+            pkg-config \
+            glib \
+            gtk4 \
+            openssl@3 \
+            sqlite \
+            libsoup \
+            jansson \
+            libwebsockets
+
+      - name: Configure
+        run: |
+          # openssl@3 is keg-only on macOS; expose its pkg-config files.
+          export PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          meson setup builddir \
+            -Dgtk-frontend=true \
+            -Dtext-frontend=false \
+            -Dtls=enabled \
+            -Dplugin=true \
+            -Ddbus=disabled \
+            -Dlibcanberra=disabled \
+            -Dwith-libwebsockets=enabled \
+            -Dwith-sysinfo=false \
+            -Dwith-lua=false \
+            -Dwith-perl=false \
+            -Dwith-python=false \
+            -Dwith-checksum=true \
+            -Dwith-fishlim=true \
+            -Dtheme-manager=false \
+            -Delectron-frontend=false \
+            -Dinstall-appdata=false
+
+      - name: Build
+        run: meson compile -C builddir
