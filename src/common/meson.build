@@ -140,7 +140,7 @@ poxchat_common_dep = declare_dependency(
   link_with: poxchat_common,
   include_directories: common_includes,
   compile_args: common_cflags,
-  dependencies: libgio_dep,
+  dependencies: common_deps,
 )
 
 poxchat_plugin_dep = declare_dependency(
