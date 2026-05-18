@@ -14,6 +14,10 @@
 #include <X11/Xatom.h>
 #endif
 
+#ifdef GDK_WINDOWING_MACOS
+#include "wm-hints-macos.h"
+#endif
+
 #include "wm-hints.h"
 
 #ifdef GDK_WINDOWING_X11
@@ -219,6 +223,12 @@ wm_hints_get_geometry (GtkWindow *win, int *x, int *y, int *w, int *h)
 	if (w) *w = (int) rw;
 	if (h) *h = (int) rh;
 	return TRUE;
+#elif defined(GDK_WINDOWING_MACOS)
+	GdkSurface *surface;
+	if (!win)
+		return FALSE;
+	surface = gtk_native_get_surface (GTK_NATIVE (win));
+	return pox_macos_get_window_geometry (surface, x, y, w, h);
 #else
 	(void) win; (void) x; (void) y; (void) w; (void) h;
 	return FALSE;
@@ -237,6 +247,12 @@ wm_hints_set_position (GtkWindow *win, int x, int y)
 
 	XMoveWindow (xdisplay, xid, x, y);
 	XFlush (xdisplay);
+#elif defined(GDK_WINDOWING_MACOS)
+	GdkSurface *surface;
+	if (!win)
+		return;
+	surface = gtk_native_get_surface (GTK_NATIVE (win));
+	pox_macos_set_window_position (surface, x, y);
 #else
 	(void) win; (void) x; (void) y;
 #endif

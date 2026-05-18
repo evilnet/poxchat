@@ -72,6 +72,15 @@ else
   poxchat_gtk_sources += 'notifications/notification-freedesktop.c'
 endif
 
+# macOS: NSWindow bridge for window position save/restore (GTK4 dropped
+# public window-positioning APIs; we reach AppKit directly via the GDK
+# macOS backend's gdk_macos_surface_get_native_window()).
+if host_machine.system() == 'darwin'
+  add_languages('objc', native: false)
+  poxchat_gtk_sources += 'wm-hints-macos.m'
+  poxchat_gtk_ldflags += ['-framework', 'AppKit', '-framework', 'Foundation']
+endif
+
 
 if get_option('plugin')
   poxchat_gtk_sources += 'plugingui.c'
