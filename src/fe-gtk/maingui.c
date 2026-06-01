@@ -3416,11 +3416,26 @@ mg_pane_idle_cb (gpointer user_data)
 	return G_SOURCE_REMOVE;
 }
 
+/* A horizontal-pane drag changes the text area's width, but the resize does
+ * not always propagate down to the xtext widget (the GtkStack/GtkOverlay chain
+ * can keep its prior child allocation, leaving xtext's window_width stale so
+ * lines clip at the new edge instead of re-wrapping). A full window resize
+ * fixes it by forcing the whole tree to re-allocate; queue_resize on xtext
+ * reproduces that for the text widget alone, so the new width reaches
+ * gtk_xtext_size_allocate and the buffer reflows. */
+static void
+mg_reflow_xtext (session_gui *gui)
+{
+	if (gui && gui->xtext)
+		gtk_widget_queue_resize (gui->xtext);
+}
+
 static void
 mg_leftpane_cb (GtkPaned *pane, GParamSpec *param, session_gui *gui)
 {
 	mg_pane_apply_detent (pane, gtk_paned_get_start_child (pane), FALSE,
 	                      G_CALLBACK (mg_leftpane_cb), gui);
+	mg_reflow_xtext (gui);
 	prefs.hex_gui_pane_left_size = gtk_paned_get_position (pane);
 	hc_debug_log ("mg_leftpane_cb: position=%d -> left_size=%d",
 	              gtk_paned_get_position (pane), prefs.hex_gui_pane_left_size);
@@ -3808,6 +3823,7 @@ mg_rightpane_cb (GtkPaned *pane, GParamSpec *param, session_gui *gui)
 {
 	mg_pane_apply_detent (pane, gtk_paned_get_end_child (pane), TRUE,
 	                      G_CALLBACK (mg_rightpane_cb), gui);
+	mg_reflow_xtext (gui);
 	/* GTK4: Defer the size calculation to an idle callback because
 	 * gtk_widget_get_width() returns invalid values during notify::position. */
 	g_idle_add (mg_rightpane_idle_cb, gui);
