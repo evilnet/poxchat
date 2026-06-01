@@ -6460,10 +6460,24 @@ gtk_xtext_recalc_widths (xtext_buffer *buf, int do_str_width)
 	/* In virtual mode, only materialized entries are in the linked list,
 	 * so this naturally only processes the visible window. */
 
+	/* The subline (word-wrap) cache is keyed only on window_width
+	 * (ent->sublines_width), but the real wrap width is
+	 * window_width - indent.  Every caller of this function has changed a
+	 * wrap-affecting input *other* than the window width — the separator
+	 * indent (drag / auto-grow / clamp), the timestamp width, or the font
+	 * metrics — so the cached sublines are stale even though window_width is
+	 * unchanged.  Without invalidating them, gtk_xtext_calc_lines_virtual_ex
+	 * skips every entry (sublines_width still == window_width) and the text
+	 * never re-wraps: dragging the separator narrower clips lines until a
+	 * window resize happens to change window_width.  Flush the cached Pango
+	 * layouts and force each entry to recompute below. */
+	display_cache_flush (buf->display_cache, buf);
+
 	/* since we have a new font, we have to recalc the text widths */
 	ent = buf->text_first;
 	while (ent)
 	{
+		ent->sublines_width = 0;	/* force re-wrap at the current indent/width */
 		if (do_str_width)
 		{
 			ent->str_width = gtk_xtext_text_width_ent (buf->xtext, ent);
