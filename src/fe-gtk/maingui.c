@@ -33,6 +33,7 @@
 #include "../common/modes.h"
 #include "../common/url.h"
 #include "../common/util.h"
+#include "../common/image-upload.h"
 #include "../common/chathistory.h"
 #include "../common/text.h"
 #include "../common/chanopt.h"
@@ -4492,6 +4493,207 @@ reply_bar_close_cb (GtkButton *button, gpointer user_data)
 		gtk_widget_grab_focus (sess->gui->input_box);
 }
 
+/* =========================================================================
+ * Image upload (drag/paste an image -> upload -> insert link)
+ * ========================================================================= */
+
+/* The text shown at the cursor while an upload is in flight; replaced with the
+ * URL on success, removed on failure. The "\xe2\x80\xa6" is a UTF-8 ellipsis. */
+#define IMG_UPLOAD_PLACEHOLDER "[uploading image\xe2\x80\xa6]"
+
+typedef struct {
+	session *sess;          /* originating session (validate with is_session) */
+} img_upload_glue;
+
+/* Replace the first occurrence of `needle` in `haystack` with `repl`, returning
+ * a newly-allocated string, or NULL if `needle` was not found. */
+static char *
+mg_str_replace_first (const char *haystack, const char *needle, const char *repl)
+{
+	const char *p = strstr (haystack, needle);
+
+	if (!p)
+		return NULL;
+
+	return g_strdup_printf ("%.*s%s%s",
+	                        (int) (p - haystack), haystack,
+	                        repl,
+	                        p + strlen (needle));
+}
+
+/* Build the replacement text for a finished upload: on success the URL plus a
+ * trailing space, on failure an empty string (placeholder removed). Falls back
+ * to appending the URL if the placeholder is gone (user edited it away). */
+static char *
+mg_upload_apply (const char *cur, const char *url)
+{
+	char *out;
+
+	if (url)
+	{
+		char *repl = g_strconcat (url, " ", NULL);
+		out = mg_str_replace_first (cur, IMG_UPLOAD_PLACEHOLDER, repl);
+		if (!out)
+			out = g_strconcat (cur, repl, NULL);
+		g_free (repl);
+	}
+	else
+	{
+		out = mg_str_replace_first (cur, IMG_UPLOAD_PLACEHOLDER, "");
+	}
+	return out;
+}
+
+/* Upload completion (always on the main thread). Swap the placeholder for the
+ * URL in the originating session — live input box if it is current, otherwise
+ * its saved input buffer — guarding against the tab having been closed. */
+static void
+mg_upload_done (const char *url, const char *error, void *user_data)
+{
+	img_upload_glue *glue = user_data;
+	session *sess = glue->sess;
+	char *newtext;
+
+	if (!is_session (sess))
+	{
+		g_free (glue);
+		return;
+	}
+
+	if (sess == current_sess)
+	{
+		newtext = mg_upload_apply (SPELL_ENTRY_GET_TEXT (sess->gui->input_box),
+		                           url);
+		if (newtext)
+		{
+			SPELL_ENTRY_SET_TEXT (sess->gui->input_box, newtext);
+			SPELL_ENTRY_SET_POS (sess->gui->input_box, -1);
+			g_free (newtext);
+		}
+	}
+	else if (sess->res)
+	{
+		newtext = mg_upload_apply (sess->res->input_text
+		                           ? sess->res->input_text : "", url);
+		if (newtext)
+		{
+			g_free (sess->res->input_text);
+			sess->res->input_text = newtext;
+		}
+	}
+
+	if (error)
+		PrintTextf (sess, _("Upload\tImage upload failed: %s\n"), error);
+
+	g_free (glue);
+}
+
+/* Insert the progress placeholder and start an upload of `bytes` for `sess`.
+ * Copies what it needs; the caller still owns `bytes`. */
+static void
+mg_upload_image (session *sess, GBytes *bytes, const char *name)
+{
+	gconstpointer data;
+	gsize len;
+	img_upload_glue *glue;
+	int pos;
+
+	if (!sess || !sess->gui || !bytes)
+		return;
+	if (!prefs.hex_url_image_upload_enable)
+		return;
+
+	/* Uploads always start from the focused session, so the input box is the
+	 * live one here — insert the placeholder at the cursor. */
+	pos = SPELL_ENTRY_GET_POS (sess->gui->input_box);
+	SPELL_ENTRY_INSERT (sess->gui->input_box, IMG_UPLOAD_PLACEHOLDER,
+	                    strlen (IMG_UPLOAD_PLACEHOLDER), &pos);
+	SPELL_ENTRY_SET_POS (sess->gui->input_box, pos);
+
+	glue = g_new0 (img_upload_glue, 1);
+	glue->sess = sess;
+
+	data = g_bytes_get_data (bytes, &len);
+	image_upload_bytes (data, len, name, mg_upload_done, glue);
+}
+
+/* "image-paste" from the input widget: an image was pasted/dropped onto it. */
+static void
+mg_input_image_paste (HexInputEdit *entry, GBytes *png_bytes, gpointer user_data)
+{
+	(void) entry; (void) user_data;
+	mg_upload_image (current_sess, png_bytes, "pasted.png");
+}
+
+/* Drop target on the input box: upload dropped image textures and image files;
+ * let everything else fall through to default handling. */
+static gboolean
+mg_input_image_drop_cb (GtkDropTarget *target, const GValue *value,
+                        double x, double y, gpointer user_data)
+{
+	(void) target; (void) x; (void) y; (void) user_data;
+
+	if (!prefs.hex_url_image_upload_enable)
+		return FALSE;
+
+	if (G_VALUE_HOLDS (value, GDK_TYPE_TEXTURE))
+	{
+		GdkTexture *texture = g_value_get_object (value);
+		GBytes *png;
+
+		if (!texture)
+			return FALSE;
+		png = gdk_texture_save_to_png_bytes (texture);
+		if (!png)
+			return FALSE;
+		mg_upload_image (current_sess, png, "image.png");
+		g_bytes_unref (png);
+		return TRUE;
+	}
+
+	if (G_VALUE_HOLDS (value, G_TYPE_FILE))
+	{
+		GFile *file = g_value_get_object (value);
+		GFileInfo *info;
+		char *contents = NULL, *basename;
+		gsize len = 0;
+		gboolean is_image = FALSE;
+		GBytes *bytes;
+
+		if (!file)
+			return FALSE;
+
+		info = g_file_query_info (file, G_FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE,
+		                          G_FILE_QUERY_INFO_NONE, NULL, NULL);
+		if (info)
+		{
+			const char *ct = g_file_info_get_content_type (info);
+			if (ct && g_str_has_prefix (ct, "image/"))
+				is_image = TRUE;
+			g_object_unref (info);
+		}
+		if (!is_image)
+			return FALSE;	/* not an image — leave to existing behavior */
+
+		if (!g_file_load_contents (file, NULL, &contents, &len, NULL, NULL))
+			return FALSE;
+		if (len == 0 || len > IMAGE_UPLOAD_MAX_SIZE)
+		{
+			g_free (contents);
+			return FALSE;
+		}
+
+		basename = g_file_get_basename (file);
+		bytes = g_bytes_new_take (contents, len);	/* takes ownership */
+		mg_upload_image (current_sess, bytes, basename);
+		g_bytes_unref (bytes);
+		g_free (basename);
+		return TRUE;
+	}
+
+	return FALSE;
+}
+
 static void
 mg_create_entry (session *sess, GtkWidget *box)
 {
@@ -4577,6 +4779,21 @@ mg_create_entry (session *sess, GtkWidget *box)
 								G_CALLBACK (mg_inputbox_focus), gui);
 		gtk_widget_add_controller (entry, focus_controller);
 	}
+
+	/* Drag an image (file or texture) onto the input box to upload it and
+	 * insert a link. Pasting an image is handled via the widget's
+	 * "image-paste" signal below. */
+	{
+		GtkDropTarget *drop;
+		GType drop_types[] = { GDK_TYPE_TEXTURE, G_TYPE_FILE };
+
+		drop = gtk_drop_target_new (G_TYPE_INVALID, GDK_ACTION_COPY);
+		gtk_drop_target_set_gtypes (drop, drop_types, G_N_ELEMENTS (drop_types));
+		g_signal_connect (drop, "drop", G_CALLBACK (mg_input_image_drop_cb), NULL);
+		gtk_widget_add_controller (entry, GTK_EVENT_CONTROLLER (drop));
+	}
+	g_signal_connect (entry, "image-paste",
+	                  G_CALLBACK (mg_input_image_paste), NULL);
 
 	/* Share xtext's emoji cache and palette with the input box */
 	if (gui->xtext && GTK_XTEXT (gui->xtext)->emoji_cache)

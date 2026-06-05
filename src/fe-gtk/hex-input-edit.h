@@ -52,8 +52,9 @@ struct _HexInputEditClass
 	GtkWidgetClass parent_class;
 
 	/* Signals */
-	void     (*activate)   (HexInputEdit *edit);
-	gboolean (*word_check) (HexInputEdit *edit, const char *word);
+	void     (*activate)    (HexInputEdit *edit);
+	gboolean (*word_check)  (HexInputEdit *edit, const char *word);
+	void     (*image_paste) (HexInputEdit *edit, GBytes *png_bytes);
 };
 
 GType      hex_input_edit_get_type     (void) G_GNUC_CONST;

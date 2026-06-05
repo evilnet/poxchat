@@ -619,6 +619,9 @@ const struct prefs vars[] =
 
 	{"url_grabber", P_OFFINT (hex_url_grabber), TYPE_BOOL},
 	{"url_grabber_limit", P_OFFINT (hex_url_grabber_limit), TYPE_INT},
+	{"url_image_strip_exif", P_OFFINT (hex_url_image_strip_exif), TYPE_BOOL},
+	{"url_image_upload", P_OFFSET (hex_url_image_upload), TYPE_STR},
+	{"url_image_upload_enable", P_OFFINT (hex_url_image_upload_enable), TYPE_BOOL},
 	{"url_logging", P_OFFINT (hex_url_logging), TYPE_BOOL},
 	{0, 0, 0},
 };
@@ -856,6 +859,8 @@ load_default_config(void)
 	prefs.hex_text_thin_sep = 1;
 	prefs.hex_text_wordwrap = 1;
 	prefs.hex_url_grabber = 1;
+	prefs.hex_url_image_upload_enable = 1;
+	prefs.hex_url_image_strip_exif = 1;
 
 	/* NUMBERS */
 	prefs.hex_away_size_max = 300;
@@ -942,6 +947,7 @@ load_default_config(void)
 	safe_strcpy (prefs.hex_irc_user_name, username, sizeof(prefs.hex_irc_user_name));
 	strcpy (prefs.hex_stamp_log_format, "%b %d %H:%M:%S ");
 	strcpy (prefs.hex_stamp_text_format, "[%H:%M:%S] ");
+	strcpy (prefs.hex_url_image_upload, "https://paste.boxlabs.uk/img/");
 
 	font = fe_get_default_font ();
 	if (font)

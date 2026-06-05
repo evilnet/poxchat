@@ -236,6 +236,8 @@ struct poxchatprefs
 	unsigned int hex_text_transparent;
 	unsigned int hex_text_wordwrap;
 	unsigned int hex_url_grabber;
+	unsigned int hex_url_image_upload_enable;
+	unsigned int hex_url_image_strip_exif;
 	unsigned int hex_url_logging;
 
 	/* NUMBERS */
@@ -337,6 +339,7 @@ struct poxchatprefs
 	char hex_text_font_main[FONTNAMELEN + 1];
 	char hex_text_font_alternative[3 * FONTNAMELEN + 1];
 	char hex_text_spell_langs[64];
+	char hex_url_image_upload[256];
 
 	/* these are the private variables */
 	guint32 local_ip;

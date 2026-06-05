@@ -161,6 +161,7 @@ undo_snapshot_free (gpointer data)
 enum {
 	SIGNAL_ACTIVATE,
 	SIGNAL_WORD_CHECK,
+	SIGNAL_IMAGE_PASTE,
 	LAST_SIGNAL
 };
 
@@ -1078,9 +1079,44 @@ do_cut (HexInputEdit *edit)
 	}
 }
 
+/* Async image-paste callback: encode the pasted texture as PNG and hand it to
+ * the embedder via "image-paste" (which uploads it and inserts a link). */
+static void
+paste_texture_ready_cb (GObject *source, GAsyncResult *result, gpointer data)
+{
+	HexInputEdit *edit = HEX_INPUT_EDIT (data);
+	GdkClipboard *clip = GDK_CLIPBOARD (source);
+	GdkTexture *texture = gdk_clipboard_read_texture_finish (clip, result, NULL);
+
+	if (texture)
+	{
+		GBytes *png = gdk_texture_save_to_png_bytes (texture);
+		if (png)
+		{
+			g_signal_emit (edit, signals[SIGNAL_IMAGE_PASTE], 0, png);
+			g_bytes_unref (png);
+		}
+		g_object_unref (texture);
+	}
+	g_object_unref (edit);
+}
+
 static void
 do_paste (HexInputEdit *edit, GdkClipboard *clip)
 {
+	GdkContentFormats *formats = gdk_clipboard_get_formats (clip);
+
+	/* If the clipboard offers an image and uploading is enabled, divert it to
+	 * the image-paste path instead of pasting text. */
+	if (prefs.hex_url_image_upload_enable && formats &&
+	    gdk_content_formats_contain_gtype (formats, GDK_TYPE_TEXTURE))
+	{
+		g_object_ref (edit);
+		gdk_clipboard_read_texture_async (clip, NULL,
+		                                  paste_texture_ready_cb, edit);
+		return;
+	}
+
 	g_object_ref (edit);
 	gdk_clipboard_read_text_async (clip, NULL,
 	                               paste_text_ready_cb, edit);
@@ -2723,6 +2759,17 @@ hex_input_edit_class_init (HexInputEditClass *klass)
 		(GSignalAccumulator) spell_accumulator, NULL,
 		g_cclosure_marshal_generic,
 		G_TYPE_BOOLEAN, 1, G_TYPE_STRING);
+
+	/* Emitted when the user pastes or drops an image; the argument is the
+	 * image encoded as PNG. The embedder uploads it and inserts a link. */
+	signals[SIGNAL_IMAGE_PASTE] = g_signal_new (
+		"image-paste",
+		G_TYPE_FROM_CLASS (klass),
+		G_SIGNAL_RUN_LAST,
+		G_STRUCT_OFFSET (HexInputEditClass, image_paste),
+		NULL, NULL,
+		g_cclosure_marshal_generic,
+		G_TYPE_NONE, 1, G_TYPE_BYTES);
 }
 
 /* =============================== */

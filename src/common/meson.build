@@ -18,6 +18,7 @@ common_sources = [
   'poxchat.c',
   'history.c',
   'ignore.c',
+  'image-upload.c',
   'inbound.c',
   'modes.c',
   'network.c',
