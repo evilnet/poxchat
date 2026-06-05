@@ -5431,7 +5431,7 @@ handle_say (session *sess, char *text, int check_spch)
 	int newcmdlen;
 	message_tags_data no_tags = MESSAGE_TAGS_DATA_INIT;
 	/* Synthesize +draft/reply tag for self-echo when sending a reply so
-	 * inbound_chanmsg prepends the "\xe2\xa4\xb7" arrow on local display.
+	 * inbound_chanmsg prepends the reply sentinel (U+FDD0) on local display.
 	 * p_message (irc_message) consumes sess->reply_msgid, so capture it
 	 * up front and free at function exit. */
 	char *captured_reply_msgid = (sess->reply_msgid ? g_strdup (sess->reply_msgid) : NULL);

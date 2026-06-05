@@ -171,6 +171,36 @@ xtext_parse_formats (const unsigned char *raw, int raw_len,
 			/* Don't consume this byte — fall through to handle it */
 		}
 
+		/* --- Reply sentinel (U+FDD0, a Unicode noncharacter) --- prepended by
+		 * inbound_chanmsg / inbound_action.  Emit a U+FFFC placeholder and a
+		 * sentinel emoji_info so the renderer vector-draws the arrow.  Handled
+		 * independently of detect_emoji so reply arrows render even without
+		 * Twemoji sprites; lazily allocates the emoji array.  (raw is unsigned;
+		 * cast the macro's bytes, which are signed char, before comparing.) */
+		if (raw[ri] == (unsigned char) XTEXT_REPLY_SENTINEL[0] && ri + 2 < raw_len &&
+		    raw[ri + 1] == (unsigned char) XTEXT_REPLY_SENTINEL[1] &&
+		    raw[ri + 2] == (unsigned char) XTEXT_REPLY_SENTINEL[2])
+		{
+			EMIT_SPAN_IF_CHANGED ();
+			if (!emojis)
+				emojis = g_new (xtext_emoji_info, emoji_alloc);
+			else if (emoji_count >= emoji_alloc)
+			{
+				emoji_alloc *= 2;
+				emojis = g_renew (xtext_emoji_info, emojis, emoji_alloc);
+			}
+			r2s[ri] = r2s[ri + 1] = r2s[ri + 2] = (guint16) stripped_pos;
+			emojis[emoji_count].stripped_off = (guint16) stripped_pos;
+			g_strlcpy (emojis[emoji_count].filename, XTEXT_REPLY_ARROW_FILE,
+			           sizeof (emojis[emoji_count].filename));
+			emoji_count++;
+			stripped[stripped_pos++] = UFFFC_BYTE0;
+			stripped[stripped_pos++] = UFFFC_BYTE1;
+			stripped[stripped_pos++] = UFFFC_BYTE2;
+			ri += 3;
+			continue;
+		}
+
 		/* --- Emoji detection --- */
 		if (detect_emoji)
 		{

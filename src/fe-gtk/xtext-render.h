@@ -93,6 +93,21 @@ typedef struct {
 	char    filename[48];   /* twemoji sprite filename (e.g. "1f600.png") */
 } xtext_emoji_info;
 
+/* Sentinel emoji_info filename marking the IRCv3 reply arrow placeholder.
+ * The renderer vector-draws the arrow instead of loading a Twemoji sprite.
+ * A leading \x01 can never be a real sprite filename, so filename[0]
+ * disambiguates. */
+#define XTEXT_REPLY_ARROW_FILE "\x01reply"
+
+/* In-text reply marker prepended by inbound_chanmsg/inbound_action (common/).
+ * U+FDD0 is a Unicode *noncharacter*: permanently reserved, never assigned to a
+ * glyph, and invalid for interchange — so it can never collide with real text a
+ * user actually typed (unlike a visible arrow like U+2BA4 would).  The strip
+ * pass converts it to a U+FFFC placeholder; the renderer vector-draws the arrow
+ * and copy/paste strips it back out.  inbound.c can't include this fe-gtk
+ * header, so it hardcodes the same bytes — keep them in sync. */
+#define XTEXT_REPLY_SENTINEL "\xef\xb7\x90"
+
 /* Aggregated format data — passed to xtext_build_attrlist() instead of
  * requiring a full textentry struct. Both xtext and hex-input-edit populate
  * this from their respective data models. */

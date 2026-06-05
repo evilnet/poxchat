@@ -367,12 +367,12 @@ inbound_action (session *sess, char *chan, char *from, char *ip, char *text,
 	int privaction = FALSE;
 	char *reply_arrow_text = NULL;
 
-	/* If this action is a reply, prefix the visible text with the arrow.
-	 * See matching block in inbound_chanmsg. */
+	/* If this action is a reply, prefix the text with the reply sentinel
+	 * (U+FDD0 noncharacter); xtext vector-draws the arrow.  See inbound_chanmsg. */
 	if (prefs.hex_irc_reply_show && tags_data->all_tags &&
 	    g_hash_table_lookup (tags_data->all_tags, "+draft/reply"))
 	{
-		reply_arrow_text = g_strconcat ("\xe2\xa4\xb7 ", text, NULL);
+		reply_arrow_text = g_strconcat ("\xef\xb7\x90 ", text, NULL);
 		text = reply_arrow_text;
 	}
 
@@ -514,14 +514,17 @@ inbound_chanmsg (server *serv, session *sess, char *chan, char *from,
 			return;
 	}
 
-	/* If this message is a reply, prefix the visible text with "\xe2\xa4\xb7 "
-	 * so the arrow shows up immediately after the nick separator.  The reply
-	 * context line itself (rendered above the message) uses "> " for an
-	 * email-style quote.  Caller still owns the original `text`. */
+	/* If this message is a reply, prefix the text with the reply sentinel
+	 * "\xef\xb7\x90 " (U+FDD0, a Unicode noncharacter — never legitimate content,
+	 * so it can't collide with a glyph the user typed).  Not shown as a glyph:
+	 * xtext's strip pass turns it into a U+FFFC placeholder and vector-draws the
+	 * arrow (xtext_draw_reply_arrow) pointing up at the quoted context line above;
+	 * copy/paste strips it back out.  Keep the bytes in sync with
+	 * XTEXT_REPLY_SENTINEL (fe-gtk/xtext-render.h).  Caller still owns `text`. */
 	if (prefs.hex_irc_reply_show && tags_data->all_tags &&
 	    g_hash_table_lookup (tags_data->all_tags, "+draft/reply"))
 	{
-		reply_arrow_text = g_strconcat ("\xe2\xa4\xb7 ", text, NULL);
+		reply_arrow_text = g_strconcat ("\xef\xb7\x90 ", text, NULL);
 		text = reply_arrow_text;
 	}
 

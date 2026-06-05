@@ -4258,6 +4258,12 @@ gtk_xtext_button_press (GtkGestureClick *gesture, int n_press, double event_x, d
 	xtext->select_end_x = x;
 	xtext->select_end_y = y;
 
+	/* Starting to highlight text: clear the hover button row and dismiss any
+	 * reaction popover so they don't block the selection.  The motion handler
+	 * returns early while button_down is set, so hide here at drag start. */
+	xtext->hover_ent = NULL;
+	gtk_xtext_react_popover_hide (xtext);
+
 	/* Pin the clicked entry so virtual scrollback doesn't evict it, and
 	 * capture (entry_id, subline) so select_start_y can be re-derived
 	 * after scrolls and buffer mutations. */
@@ -4380,6 +4386,29 @@ gtk_xtext_selection_get_text (GtkXText *xtext, int *len_ret)
 		ent = ent->next;
 	}
 	*pos = 0;
+
+	/* Drop the reply sentinel (and the single space prepended after it) from
+	 * copied text — it is internal render chrome, not content.  Safe to remove
+	 * unconditionally: U+FDD0 is a noncharacter, so this can never delete a glyph
+	 * the user actually typed.  Compact in place; && short-circuits on the lead
+	 * byte so r[1]/r[2] never read past the nul terminator. */
+	{
+		char *r = txt, *w = txt;
+		while (*r)
+		{
+			if ((unsigned char) r[0] == (unsigned char) XTEXT_REPLY_SENTINEL[0] &&
+			    (unsigned char) r[1] == (unsigned char) XTEXT_REPLY_SENTINEL[1] &&
+			    (unsigned char) r[2] == (unsigned char) XTEXT_REPLY_SENTINEL[2])
+			{
+				r += 3;
+				if (*r == ' ')
+					r++;
+				continue;
+			}
+			*w++ = *r++;
+		}
+		*w = 0;
+	}
 
 	if (xtext->color_paste)
 	{
@@ -4732,6 +4761,56 @@ gtk_xtext_reset (GtkXText * xtext, int mark)
 	}
 }
 
+/* Vector-draw the IRCv3 reply arrow: a bold "left then up" elbow whose head
+ * points straight up at the quote context line rendered directly above, so a
+ * reply visibly points at the message it answers.  Drawn with Cairo rather
+ * than a font glyph so it renders identically on every platform with no font
+ * dependency, scales with the font size, and follows the theme FG color at a
+ * muted alpha.  cell_x/cell_y are the top-left of the U+FFFC placeholder cell
+ * (located via the emoji-placeholder machinery); size is the font height. */
+static void
+xtext_draw_reply_arrow (GtkXText *xtext, int cell_x, int cell_y, int size, double alpha)
+{
+	cairo_t *cr = xtext->cr;
+	double S = size;
+	double stem   = cell_x + S * 0.34;   /* vertical stem / arrowhead axis */
+	double tail   = cell_x + S * 0.86;   /* tail end, toward the message text */
+	double bottom = cell_y + S * 0.73;   /* elbow corner */
+	double headlo = cell_y + S * 0.34;   /* base of the arrowhead */
+	double tip    = cell_y + S * 0.13;   /* arrowhead tip (points up) */
+	double hw     = S * 0.19;            /* arrowhead half-width */
+	double lw     = S * 0.155;           /* stroke width (bold) */
+	double saved_alpha;
+
+	if (!cr)
+		return;
+
+	cairo_save (cr);
+	cairo_set_line_width (cr, lw);
+	cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+	cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+
+	saved_alpha = xtext->render_alpha;
+	xtext->render_alpha = alpha;
+	xtext_set_source_color (xtext, XTEXT_FG);
+	xtext->render_alpha = saved_alpha;
+
+	/* Elbow stem: tail (right) -> corner -> up to the arrowhead base */
+	cairo_move_to (cr, tail, bottom);
+	cairo_line_to (cr, stem, bottom);
+	cairo_line_to (cr, stem, headlo);
+	cairo_stroke (cr);
+
+	/* Filled triangular arrowhead pointing up */
+	cairo_move_to (cr, stem, tip);
+	cairo_line_to (cr, stem - hw, headlo + lw * 0.25);
+	cairo_line_to (cr, stem + hw, headlo + lw * 0.25);
+	cairo_close_path (cr);
+	cairo_fill (cr);
+
+	cairo_restore (cr);
+}
+
 /* render a single line, which WONT wrap, and parse mIRC colors */
 
 /* --- New subline renderer ---
@@ -4910,6 +4989,20 @@ gtk_xtext_render_subline (GtkXText *xtext, int y, textentry *ent,
 			}
 			int sprite_y = y - xtext->font->ascent;
 
+			if (em->filename[0] == XTEXT_REPLY_ARROW_FILE[0] && ent->reply)
+			{
+				/* Reply-arrow placeholder: clear the U+FFFC cell and vector-draw.
+				 * Gated on ent->reply so a stray/injected sentinel that isn't an
+				 * actual +draft/reply can't conjure an arrow (it renders blank). */
+				xtext_set_source_color (xtext, XTEXT_BG);
+				cairo_rectangle (xtext->cr, sprite_x, sprite_y,
+				                 xtext->fontsize, xtext->fontsize);
+				cairo_fill (xtext->cr);
+				xtext_draw_reply_arrow (xtext, sprite_x, sprite_y,
+				                        xtext->fontsize, 0.55);
+				continue;
+			}
+
 			cairo_surface_t *sprite = xtext_emoji_cache_get (
 				xtext->emoji_cache, em->filename);
 			if (sprite)
@@ -5044,6 +5137,12 @@ gtk_xtext_render_subline (GtkXText *xtext, int y, textentry *ent,
 						}
 						{
 							int sprite_y = y - xtext->font->ascent;
+							if (em->filename[0] == XTEXT_REPLY_ARROW_FILE[0] && ent->reply)
+							{
+								xtext_draw_reply_arrow (xtext, sprite_x, sprite_y,
+								                        xtext->fontsize, 0.6);
+								continue;
+							}
 							cairo_surface_t *sprite = xtext_emoji_cache_get (
 								xtext->emoji_cache, em->filename);
 							if (sprite)
@@ -5542,10 +5641,11 @@ gtk_xtext_render_stamp (GtkXText * xtext, textentry * ent,
 	return text_width > xtext->stamp_width ? text_width : xtext->stamp_width;
 }
 
-/* Render a reply context line above a message: "> nick: preview text..."
+/* Render a reply context line above a message: "> <nick> preview text..."
  * Draws at reduced alpha to visually distinguish from message text.
- * The matching "\xe2\xa4\xb7" arrow is prepended to the reply's message text
- * itself at the inbound boundary (see inbound_chanmsg / inbound_privmsg). */
+ * The matching arrow on the reply's own line is vector-drawn by
+ * xtext_draw_reply_arrow (over a U+FDD0 noncharacter sentinel prepended at the
+ * inbound boundary) and points up at this line — see inbound_chanmsg / inbound_action. */
 static void
 gtk_xtext_render_reply_context (GtkXText *xtext, textentry *ent, int line, int win_width)
 {
@@ -5560,9 +5660,9 @@ gtk_xtext_render_reply_context (GtkXText *xtext, textentry *ent, int line, int w
 
 	/* Build display text */
 	if (reply->target_nick && reply->target_nick[0] && reply->target_preview && reply->target_preview[0])
-		text = g_strdup_printf ("> %s: %s", reply->target_nick, reply->target_preview);
+		text = g_strdup_printf ("> <%s> %s", reply->target_nick, reply->target_preview);
 	else if (reply->target_nick && reply->target_nick[0])
-		text = g_strdup_printf ("> %s", reply->target_nick);
+		text = g_strdup_printf ("> <%s>", reply->target_nick);
 	else
 		text = g_strdup ("> (unknown message)");
 
@@ -6210,8 +6310,12 @@ gtk_xtext_render_line (GtkXText * xtext, textentry * ent, int line,
 	gtk_xtext_draw_marker (xtext, ent, y - xtext->fontsize * (taken + start_subline));
 
 	/* --- Hover buttons: reply, react-text, react-emoji, [redact] --- */
+	/* Suppress while the user is highlighting text (active drag or a live
+	 * selection in this buffer) so the button row doesn't block the text. */
 	if (ent == xtext->hover_ent && ent->msgid && ent->is_user_msg &&
-	    first_subline_y && xtext->cr)
+	    first_subline_y && xtext->cr && !xtext->button_down &&
+	    !(xtext->selection_buffer == xtext->buffer &&
+	      gtk_xtext_is_selecting (xtext)))
 	{
 		int btn_size = xtext->fontsize + 2;
 		int gap = 2;
