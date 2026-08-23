@@ -1496,6 +1496,32 @@ show_context_menu (HexInputEdit *edit, double x, double y)
 	gtk_popover_popup (GTK_POPOVER (popover));
 }
 
+/* Delete bytes [start,end) with an undo snapshot, fixing up the cursor.
+ * Used by the readline-style line/word kill keys (Ctrl-U/K/W/D). */
+static void
+delete_range_bytes (HexInputEdit *edit, int start, int end)
+{
+	HexInputEditPriv *priv = edit->priv;
+
+	if (!priv->editable)
+		return;
+	if (start < 0)
+		start = 0;
+	if (end > (int) priv->text->len)
+		end = (int) priv->text->len;
+	if (start >= end)
+		return;
+
+	push_undo_snapshot (edit);
+	g_string_erase (priv->text, start, end - start);
+	if (priv->cursor_byte >= end)
+		priv->cursor_byte -= end - start;
+	else if (priv->cursor_byte > start)
+		priv->cursor_byte = start;
+	priv->sel_anchor_byte = -1;
+	mark_dirty (edit);
+}
+
 static gboolean
 key_pressed_cb (GtkEventControllerKey *controller, guint keyval,
                 guint keycode, GdkModifierType state, gpointer data)
@@ -1515,9 +1541,88 @@ key_pressed_cb (GtkEventControllerKey *controller, guint keyval,
 	{
 		switch (keyval)
 		{
+		/* Ctrl-A: beginning of line (readline). Select-all moves to Ctrl-/ */
 		case GDK_KEY_a:
 		case GDK_KEY_A:
+			priv->cursor_byte = 0;
+			priv->sel_anchor_byte = -1;
+			reset_blink (edit);
+			return TRUE;
+
+		case GDK_KEY_slash:
 			do_select_all (edit);
+			return TRUE;
+
+		/* Ctrl-E: end of line */
+		case GDK_KEY_e:
+		case GDK_KEY_E:
+			priv->cursor_byte = (int) priv->text->len;
+			priv->sel_anchor_byte = -1;
+			reset_blink (edit);
+			return TRUE;
+
+		/* Ctrl-B / Ctrl-F: move one char left / right */
+		case GDK_KEY_b:
+		case GDK_KEY_B:
+			if (priv->cursor_byte > 0)
+			{
+				const char *prev = g_utf8_find_prev_char (priv->text->str,
+				        priv->text->str + priv->cursor_byte);
+				if (prev)
+					priv->cursor_byte = (int)(prev - priv->text->str);
+			}
+			priv->sel_anchor_byte = -1;
+			reset_blink (edit);
+			return TRUE;
+
+		case GDK_KEY_f:
+		case GDK_KEY_F:
+			if (priv->cursor_byte < (int) priv->text->len)
+			{
+				const char *next = g_utf8_next_char (
+				        priv->text->str + priv->cursor_byte);
+				priv->cursor_byte = (int)(next - priv->text->str);
+			}
+			priv->sel_anchor_byte = -1;
+			reset_blink (edit);
+			return TRUE;
+
+		/* Ctrl-U: kill to start of line */
+		case GDK_KEY_u:
+		case GDK_KEY_U:
+			delete_range_bytes (edit, 0, priv->cursor_byte);
+			reset_blink (edit);
+			return TRUE;
+
+		/* Ctrl-K: kill to end of line */
+		case GDK_KEY_k:
+		case GDK_KEY_K:
+			delete_range_bytes (edit, priv->cursor_byte, (int) priv->text->len);
+			reset_blink (edit);
+			return TRUE;
+
+		/* Ctrl-W: delete previous word */
+		case GDK_KEY_w:
+		case GDK_KEY_W:
+		{
+			int wb = find_word_boundary_left (priv->text->str,
+			        (int) priv->text->len, priv->cursor_byte);
+			delete_range_bytes (edit, wb, priv->cursor_byte);
+			reset_blink (edit);
+			return TRUE;
+		}
+
+		/* Ctrl-D: delete next char */
+		case GDK_KEY_d:
+		case GDK_KEY_D:
+			if (priv->cursor_byte < (int) priv->text->len)
+			{
+				const char *next = g_utf8_next_char (
+				        priv->text->str + priv->cursor_byte);
+				delete_range_bytes (edit, priv->cursor_byte,
+				        (int)(next - priv->text->str));
+			}
+			reset_blink (edit);
 			return TRUE;
 
 		case GDK_KEY_c:
