@@ -4732,6 +4732,86 @@ mg_input_image_paste (HexInputEdit *entry, GBytes *png_bytes, gpointer user_data
 	mg_upload_image (current_sess, png_bytes, "pasted.png");
 }
 
+/* Is `file` an image?  Checks the GIO content type's MIME form, then falls
+ * back to the extension.  The MIME conversion matters on Windows: Win32 GIO
+ * content types are registry extension strings (".png", not "image/png"),
+ * so a bare "image/" prefix test on the raw type never matches there, and
+ * the registry frequently has no "Content Type" for newer formats (.webp),
+ * hence the extension fallback. */
+static gboolean
+mg_file_is_image (GFile *file)
+{
+	static const char *const image_exts[] = {
+		".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg",
+		".avif", ".heic", ".heif", ".tif", ".tiff", ".ico"
+	};
+	GFileInfo *info;
+	gboolean is_image = FALSE;
+	char *basename;
+	gsize i;
+
+	info = g_file_query_info (file, G_FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE,
+	                          G_FILE_QUERY_INFO_NONE, NULL, NULL);
+	if (info)
+	{
+		const char *ct = g_file_info_get_content_type (info);
+		if (ct)
+		{
+			char *mime = g_content_type_get_mime_type (ct);
+			if ((mime && g_str_has_prefix (mime, "image/")) ||
+			    g_str_has_prefix (ct, "image/"))
+				is_image = TRUE;
+			g_free (mime);
+		}
+		g_object_unref (info);
+	}
+	if (is_image)
+		return TRUE;
+
+	basename = g_file_get_basename (file);
+	if (basename)
+	{
+		const char *dot = strrchr (basename, '.');
+		if (dot)
+			for (i = 0; i < G_N_ELEMENTS (image_exts); i++)
+				if (g_ascii_strcasecmp (dot, image_exts[i]) == 0)
+				{
+					is_image = TRUE;
+					break;
+				}
+		g_free (basename);
+	}
+	return is_image;
+}
+
+/* Upload one dropped file if it's an image.  Returns FALSE (without side
+ * effects) for non-images so the caller can leave the drop unhandled. */
+static gboolean
+mg_input_upload_image_file (GFile *file)
+{
+	char *contents = NULL, *basename;
+	gsize len = 0;
+	GBytes *bytes;
+
+	if (!file || !mg_file_is_image (file))
+		return FALSE;
+
+	if (!g_file_load_contents (file, NULL, &contents, &len, NULL, NULL))
+		return FALSE;
+	if (len == 0 || len > IMAGE_UPLOAD_MAX_SIZE)
+	{
+		g_free (contents);
+		return FALSE;
+	}
+
+	basename = g_file_get_basename (file);
+	bytes = g_bytes_new_take (contents, len);	/* takes ownership */
+	mg_upload_image (current_sess, bytes, basename);
+	g_bytes_unref (bytes);
+	g_free (basename);
+	return TRUE;
+}
+
 /* Drop target on the input box: upload dropped image textures and image files;
  * let everything else fall through to default handling. */
 static gboolean
@@ -4758,45 +4838,24 @@ mg_input_image_drop_cb (GtkDropTarget *target, const GValue *value,
 		return TRUE;
 	}
 
-	if (G_VALUE_HOLDS (value, G_TYPE_FILE))
+	/* Windows shell drags (CF_HDROP) arrive as a GdkFileList — a target
+	 * typed only G_TYPE_FILE never matches the offer, so Explorer drags
+	 * saw no drop target at all (same gap as the DCC targets had). */
+	if (G_VALUE_HOLDS (value, GDK_TYPE_FILE_LIST))
 	{
-		GFile *file = g_value_get_object (value);
-		GFileInfo *info;
-		char *contents = NULL, *basename;
-		gsize len = 0;
-		gboolean is_image = FALSE;
-		GBytes *bytes;
+		GSList *files = gdk_file_list_get_files (g_value_get_boxed (value));
+		GSList *l;
+		gboolean any = FALSE;
 
-		if (!file)
-			return FALSE;
-
-		info = g_file_query_info (file, G_FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE,
-		                          G_FILE_QUERY_INFO_NONE, NULL, NULL);
-		if (info)
-		{
-			const char *ct = g_file_info_get_content_type (info);
-			if (ct && g_str_has_prefix (ct, "image/"))
-				is_image = TRUE;
-			g_object_unref (info);
-		}
-		if (!is_image)
-			return FALSE;	/* not an image — leave to existing behavior */
-
-		if (!g_file_load_contents (file, NULL, &contents, &len, NULL, NULL))
-			return FALSE;
-		if (len == 0 || len > IMAGE_UPLOAD_MAX_SIZE)
-		{
-			g_free (contents);
-			return FALSE;
-		}
-
-		basename = g_file_get_basename (file);
-		bytes = g_bytes_new_take (contents, len);	/* takes ownership */
-		mg_upload_image (current_sess, bytes, basename);
-		g_bytes_unref (bytes);
-		g_free (basename);
-		return TRUE;
+		for (l = files; l; l = l->next)
+			if (mg_input_upload_image_file (l->data))
+				any = TRUE;
+		g_slist_free (files);
+		return any;
 	}
+
+	if (G_VALUE_HOLDS (value, G_TYPE_FILE))
+		return mg_input_upload_image_file (g_value_get_object (value));
 
 	return FALSE;
 }
@@ -4892,7 +4951,7 @@ mg_create_entry (session *sess, GtkWidget *box)
 	 * "image-paste" signal below. */
 	{
 		GtkDropTarget *drop;
-		GType drop_types[] = { GDK_TYPE_TEXTURE, G_TYPE_FILE };
+		GType drop_types[] = { GDK_TYPE_TEXTURE, GDK_TYPE_FILE_LIST, G_TYPE_FILE };
 
 		drop = gtk_drop_target_new (G_TYPE_INVALID, GDK_ACTION_COPY);
 		gtk_drop_target_set_gtypes (drop, drop_types, G_N_ELEMENTS (drop_types));
