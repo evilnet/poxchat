@@ -162,6 +162,7 @@ enum {
 	SIGNAL_ACTIVATE,
 	SIGNAL_WORD_CHECK,
 	SIGNAL_IMAGE_PASTE,
+	SIGNAL_FILE_PASTE,
 	LAST_SIGNAL
 };
 
@@ -1101,6 +1102,36 @@ paste_texture_ready_cb (GObject *source, GAsyncResult *result, gpointer data)
 	g_object_unref (edit);
 }
 
+/* Async file-list paste callback: offer the copied files to the embedder via
+ * "file-paste" (which uploads any images).  If the embedder doesn't handle
+ * them (no images among them), fall back to pasting the clipboard as text so
+ * e.g. a copied file's path still pastes where the source app offers one. */
+static void
+paste_file_list_ready_cb (GObject *source, GAsyncResult *result, gpointer data)
+{
+	HexInputEdit *edit = HEX_INPUT_EDIT (data);
+	GdkClipboard *clip = GDK_CLIPBOARD (source);
+	const GValue *value = gdk_clipboard_read_value_finish (clip, result, NULL);
+	gboolean handled = FALSE;
+
+	if (value && G_VALUE_HOLDS (value, GDK_TYPE_FILE_LIST))
+	{
+		GdkFileList *files = g_value_get_boxed (value);
+		if (files)
+			g_signal_emit (edit, signals[SIGNAL_FILE_PASTE], 0, files,
+			               &handled);
+	}
+
+	if (!handled)
+	{
+		/* transfers our ref on `edit` to the text callback */
+		gdk_clipboard_read_text_async (clip, NULL,
+		                               paste_text_ready_cb, edit);
+		return;
+	}
+	g_object_unref (edit);
+}
+
 static void
 do_paste (HexInputEdit *edit, GdkClipboard *clip)
 {
@@ -1114,6 +1145,20 @@ do_paste (HexInputEdit *edit, GdkClipboard *clip)
 		g_object_ref (edit);
 		gdk_clipboard_read_texture_async (clip, NULL,
 		                                  paste_texture_ready_cb, edit);
+		return;
+	}
+
+	/* Copied files (Explorer Ctrl+C arrives as CFSTR_SHELLIDLIST, which GDK
+	 * advertises as text/uri-list and deserializes to a GdkFileList; Linux
+	 * file managers offer text/uri-list directly).  Offer them to the
+	 * embedder; it falls back to text if none are images. */
+	if (prefs.hex_url_image_upload_enable && formats &&
+	    gdk_content_formats_contain_gtype (formats, GDK_TYPE_FILE_LIST))
+	{
+		g_object_ref (edit);
+		gdk_clipboard_read_value_async (clip, GDK_TYPE_FILE_LIST,
+		                                G_PRIORITY_DEFAULT, NULL,
+		                                paste_file_list_ready_cb, edit);
 		return;
 	}
 
@@ -2770,6 +2815,18 @@ hex_input_edit_class_init (HexInputEditClass *klass)
 		NULL, NULL,
 		g_cclosure_marshal_generic,
 		G_TYPE_NONE, 1, G_TYPE_BYTES);
+
+	/* Emitted when the user pastes copied files; the argument is a
+	 * GdkFileList.  Return TRUE if handled (an upload started) — otherwise
+	 * the widget falls back to pasting the clipboard as text. */
+	signals[SIGNAL_FILE_PASTE] = g_signal_new (
+		"file-paste",
+		G_TYPE_FROM_CLASS (klass),
+		G_SIGNAL_RUN_LAST,
+		G_STRUCT_OFFSET (HexInputEditClass, file_paste),
+		g_signal_accumulator_true_handled, NULL,
+		g_cclosure_marshal_generic,
+		G_TYPE_BOOLEAN, 1, GDK_TYPE_FILE_LIST);
 }
 
 /* =============================== */

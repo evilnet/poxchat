@@ -4812,6 +4812,28 @@ mg_input_upload_image_file (GFile *file)
 	return TRUE;
 }
 
+/* "file-paste" from the input widget: files were pasted (e.g. Explorer /
+ * file-manager Ctrl+C on image files).  Upload any images; returning FALSE
+ * when none are lets the widget fall back to a text paste. */
+static gboolean
+mg_input_file_paste (HexInputEdit *entry, GdkFileList *files, gpointer user_data)
+{
+	GSList *list, *l;
+	gboolean any = FALSE;
+
+	(void) entry; (void) user_data;
+
+	if (!prefs.hex_url_image_upload_enable)
+		return FALSE;
+
+	list = gdk_file_list_get_files (files);
+	for (l = list; l; l = l->next)
+		if (mg_input_upload_image_file (l->data))
+			any = TRUE;
+	g_slist_free (list);
+	return any;
+}
+
 /* Drop target on the input box: upload dropped image textures and image files;
  * let everything else fall through to default handling. */
 static gboolean
@@ -4960,6 +4982,8 @@ mg_create_entry (session *sess, GtkWidget *box)
 	}
 	g_signal_connect (entry, "image-paste",
 	                  G_CALLBACK (mg_input_image_paste), NULL);
+	g_signal_connect (entry, "file-paste",
+	                  G_CALLBACK (mg_input_file_paste), NULL);
 
 	/* Share xtext's emoji cache and palette with the input box */
 	if (gui->xtext && GTK_XTEXT (gui->xtext)->emoji_cache)
