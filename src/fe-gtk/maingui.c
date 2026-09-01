@@ -4796,6 +4796,22 @@ mg_input_upload_image_file (GFile *file)
 	if (!file || !mg_file_is_image (file))
 		return FALSE;
 
+	/* Reject oversized files before reading them: this load is synchronous,
+	 * so without the pre-check a multi-GB file would be read in full on the
+	 * UI thread only to fail the size check below.  If the size query fails
+	 * (some virtual filesystems), fall through to the post-load check. */
+	{
+		GFileInfo *info = g_file_query_info (file, G_FILE_ATTRIBUTE_STANDARD_SIZE,
+		                                     G_FILE_QUERY_INFO_NONE, NULL, NULL);
+		if (info)
+		{
+			goffset size = g_file_info_get_size (info);
+			g_object_unref (info);
+			if (size == 0 || size > IMAGE_UPLOAD_MAX_SIZE)
+				return FALSE;
+		}
+	}
+
 	if (!g_file_load_contents (file, NULL, &contents, &len, NULL, NULL))
 		return FALSE;
 	if (len == 0 || len > IMAGE_UPLOAD_MAX_SIZE)
