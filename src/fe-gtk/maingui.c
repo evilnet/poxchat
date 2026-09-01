@@ -4695,6 +4695,31 @@ mg_upload_done (const char *url, const char *error, void *user_data)
 	g_free (glue);
 }
 
+/* Insert the progress placeholder at the cursor of `sess`'s input box and
+ * return the completion glue for mg_upload_done, or NULL if uploads are
+ * disabled or the session has no GUI.  Uploads always start from the focused
+ * session, so the input box is the live one here. */
+static img_upload_glue *
+mg_upload_placeholder_begin (session *sess)
+{
+	img_upload_glue *glue;
+	int pos;
+
+	if (!sess || !sess->gui)
+		return NULL;
+	if (!prefs.hex_url_image_upload_enable)
+		return NULL;
+
+	pos = SPELL_ENTRY_GET_POS (sess->gui->input_box);
+	SPELL_ENTRY_INSERT (sess->gui->input_box, IMG_UPLOAD_PLACEHOLDER,
+	                    strlen (IMG_UPLOAD_PLACEHOLDER), &pos);
+	SPELL_ENTRY_SET_POS (sess->gui->input_box, pos);
+
+	glue = g_new0 (img_upload_glue, 1);
+	glue->sess = sess;
+	return glue;
+}
+
 /* Insert the progress placeholder and start an upload of `bytes` for `sess`.
  * Copies what it needs; the caller still owns `bytes`. */
 static void
@@ -4703,22 +4728,12 @@ mg_upload_image (session *sess, GBytes *bytes, const char *name)
 	gconstpointer data;
 	gsize len;
 	img_upload_glue *glue;
-	int pos;
 
-	if (!sess || !sess->gui || !bytes)
+	if (!bytes)
 		return;
-	if (!prefs.hex_url_image_upload_enable)
+	glue = mg_upload_placeholder_begin (sess);
+	if (!glue)
 		return;
-
-	/* Uploads always start from the focused session, so the input box is the
-	 * live one here — insert the placeholder at the cursor. */
-	pos = SPELL_ENTRY_GET_POS (sess->gui->input_box);
-	SPELL_ENTRY_INSERT (sess->gui->input_box, IMG_UPLOAD_PLACEHOLDER,
-	                    strlen (IMG_UPLOAD_PLACEHOLDER), &pos);
-	SPELL_ENTRY_SET_POS (sess->gui->input_box, pos);
-
-	glue = g_new0 (img_upload_glue, 1);
-	glue->sess = sess;
 
 	data = g_bytes_get_data (bytes, &len);
 	image_upload_bytes (data, len, name, mg_upload_done, glue);
@@ -4784,22 +4799,63 @@ mg_file_is_image (GFile *file)
 	return is_image;
 }
 
-/* Upload one dropped file if it's an image.  Returns FALSE (without side
- * effects) for non-images so the caller can leave the drop unhandled. */
+typedef struct {
+	img_upload_glue *glue;  /* owned until handed to image_upload_bytes */
+	char *name;
+} img_file_load_glue;
+
+/* Async continuation of mg_input_upload_image_file: the file contents have
+ * arrived (or failed).  On failure route through mg_upload_done with an
+ * error so the already-inserted placeholder is removed and the reason
+ * printed; on success hand off to the uploader, which owns `glue` from
+ * there. */
+static void
+mg_file_load_ready_cb (GObject *source, GAsyncResult *result, gpointer data)
+{
+	img_file_load_glue *fl = data;
+	char *contents = NULL;
+	gsize len = 0;
+	GError *err = NULL;
+
+	if (!g_file_load_contents_finish (G_FILE (source), result,
+	                                  &contents, &len, NULL, &err))
+	{
+		mg_upload_done (NULL, err ? err->message : _("read failed"), fl->glue);
+		g_clear_error (&err);
+	}
+	else if (len == 0 || len > IMAGE_UPLOAD_MAX_SIZE)
+	{
+		g_free (contents);
+		mg_upload_done (NULL, _("file is empty or too large"), fl->glue);
+	}
+	else
+	{
+		image_upload_bytes (contents, len, fl->name, mg_upload_done, fl->glue);
+		g_free (contents);	/* image_upload_bytes copies what it needs */
+	}
+
+	g_free (fl->name);
+	g_free (fl);
+}
+
+/* Start an upload of a dropped/pasted file if it's an image.  Returns FALSE
+ * (without side effects) for non-images and obvious rejects so the caller
+ * can leave the drop unhandled.  The metadata checks here are synchronous
+ * but stat-sized; the content read is async so a large file on slow media
+ * never stalls the UI — the placeholder goes in immediately, and a failed
+ * read removes it again via mg_upload_done's error path. */
 static gboolean
 mg_input_upload_image_file (GFile *file)
 {
-	char *contents = NULL, *basename;
-	gsize len = 0;
-	GBytes *bytes;
+	img_upload_glue *glue;
+	img_file_load_glue *fl;
 
 	if (!file || !mg_file_is_image (file))
 		return FALSE;
 
-	/* Reject oversized files before reading them: this load is synchronous,
-	 * so without the pre-check a multi-GB file would be read in full on the
-	 * UI thread only to fail the size check below.  If the size query fails
-	 * (some virtual filesystems), fall through to the post-load check. */
+	/* Reject oversized files up front rather than reading them first.  If
+	 * the size query fails (some virtual filesystems), fall through to the
+	 * post-read check in the callback. */
 	{
 		GFileInfo *info = g_file_query_info (file, G_FILE_ATTRIBUTE_STANDARD_SIZE,
 		                                     G_FILE_QUERY_INFO_NONE, NULL, NULL);
@@ -4812,19 +4868,15 @@ mg_input_upload_image_file (GFile *file)
 		}
 	}
 
-	if (!g_file_load_contents (file, NULL, &contents, &len, NULL, NULL))
+	glue = mg_upload_placeholder_begin (current_sess);
+	if (!glue)
 		return FALSE;
-	if (len == 0 || len > IMAGE_UPLOAD_MAX_SIZE)
-	{
-		g_free (contents);
-		return FALSE;
-	}
 
-	basename = g_file_get_basename (file);
-	bytes = g_bytes_new_take (contents, len);	/* takes ownership */
-	mg_upload_image (current_sess, bytes, basename);
-	g_bytes_unref (bytes);
-	g_free (basename);
+	fl = g_new0 (img_file_load_glue, 1);
+	fl->glue = glue;
+	fl->name = g_file_get_basename (file);
+
+	g_file_load_contents_async (file, NULL, mg_file_load_ready_cb, fl);
 	return TRUE;
 }
 
