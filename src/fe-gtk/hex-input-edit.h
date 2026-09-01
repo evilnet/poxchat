@@ -55,6 +55,7 @@ struct _HexInputEditClass
 	void     (*activate)    (HexInputEdit *edit);
 	gboolean (*word_check)  (HexInputEdit *edit, const char *word);
 	void     (*image_paste) (HexInputEdit *edit, GBytes *png_bytes);
+	gboolean (*file_paste)  (HexInputEdit *edit, GdkFileList *files);
 };
 
 GType      hex_input_edit_get_type     (void) G_GNUC_CONST;
