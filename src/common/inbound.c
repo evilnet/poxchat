@@ -862,8 +862,14 @@ inbound_ujoin (server *serv, char *chan, char *nick, char *ip,
 		 * these markers. */
 		if (restored)
 		{
+			/* A local annotation, not the JOIN: it must not borrow the
+			 * JOIN's msgid (the JOIN row already carries it, and a second
+			 * row with the same msgid is dropped by the store). */
+			const char *inbound_msgid = text_inbound_msgid_suspend ();
+
 			EMIT_SIGNAL_TIMESTAMP (XP_TE_RECONNECT, sess, NULL, NULL, NULL, NULL, 0,
 			                       time (NULL));
+			text_inbound_msgid_resume (inbound_msgid);
 
 			/* Same signal that fires this branch tells us the server
 			 * keeps channel state across our disconnects — record it so

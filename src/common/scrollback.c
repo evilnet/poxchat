@@ -925,6 +925,20 @@ init_database (scrollback_db *sdb)
 		}
 	}
 
+	/* A reply cannot precede what it answers.  Reply rows keyed to a
+	 * message older than their target were written by the old attach
+	 * fallback: a reply whose own line was not materialized (tab scrolled
+	 * up, window full) got hung on the newest entry on screen instead,
+	 * and persisted that way.  Drop them; the fixed attach never writes
+	 * them again.  Cheap — both joins hit the (channel_id, msgid) index. */
+	sqlite3_exec (sdb->db,
+		"DELETE FROM replies WHERE id IN ("
+		"  SELECT r.id FROM replies r"
+		"  JOIN messages a ON a.channel_id = r.channel_id AND a.msgid = r.msgid"
+		"  JOIN messages b ON b.channel_id = r.channel_id AND b.msgid = r.target_msgid"
+		"  WHERE a.timestamp < b.timestamp)",
+		NULL, NULL, NULL);
+
 	return TRUE;
 }
 
@@ -2810,6 +2824,38 @@ scrollback_get_index_of_rowid (scrollback_db *db, const char *channel, gint64 ro
 	poxchat_timing_log ("index_of_rowid %s row=%" G_GINT64_FORMAT " via prefix-count -> %d",
 	                    channel, rowid, index);
 	return index;
+}
+
+char *
+scrollback_get_text_by_msgid (scrollback_db *db, const char *channel, const char *msgid)
+{
+	char *text = NULL;
+	gint64 channel_id;
+	sqlite3_stmt *stmt = NULL;
+
+	if (!db || !channel || !msgid || !msgid[0])
+		return NULL;
+
+	channel_id = scrollback_get_channel_id (db, channel);
+	if (channel_id < 0)
+		return NULL;
+
+	/* One-off query — only for a reply whose target is not materialized */
+	if (sqlite3_prepare_v2 (db->db,
+			"SELECT text FROM messages WHERE channel_id = ? AND msgid = ? LIMIT 1",
+			-1, &stmt, NULL) == SQLITE_OK)
+	{
+		sqlite3_bind_int64 (stmt, 1, channel_id);
+		sqlite3_bind_text (stmt, 2, msgid, -1, SQLITE_TRANSIENT);
+		if (sqlite3_step (stmt) == SQLITE_ROW)
+		{
+			const char *t = (const char *) sqlite3_column_text (stmt, 0);
+			if (t && t[0])
+				text = g_strdup (t);
+		}
+		sqlite3_finalize (stmt);
+	}
+	return text;
 }
 
 gint64

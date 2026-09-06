@@ -283,6 +283,120 @@ scrollback_remove_reaction_for_session (session *sess, const char *target_msgid,
 		                            reaction_text, nick);
 }
 
+void
+text_reply_quote (const char *text, int len, int left_len,
+                  char *nick, gsize nick_size,
+                  char *preview, gsize preview_size)
+{
+	const char *right;
+	int right_len;
+
+	nick[0] = 0;
+	preview[0] = 0;
+	if (!text || len <= 0)
+		return;
+
+	if (left_len < 0)
+	{
+		const char *tab = memchr (text, '\t', len);
+
+		if (tab)
+		{
+			left_len = (int) (tab - text);
+			right = tab + 1;
+		}
+		else
+		{
+			left_len = 0;
+			right = text;
+		}
+	}
+	else
+		right = text + left_len + 1;		/* the space xtext puts after the left part */
+	if (left_len > len)
+		left_len = len;
+	right_len = (int) (len - (right - text));
+	if (right_len < 0)
+		right_len = 0;
+
+	if (left_len > 0)
+	{
+		char *raw = g_strndup (text, left_len);
+		char *stripped = strip_color (raw, -1, STRIP_ALL);
+		char *p = stripped;
+		size_t n;
+
+		g_free (raw);
+		/* Trim the surrounding <> or «» of the nick column */
+		if (*p == '<')
+			p++;
+		else if ((unsigned char) p[0] == 0xc2 && (unsigned char) p[1] == 0xab)
+			p += 2;
+		n = strlen (p);
+		while (n > 0)
+		{
+			if (p[n - 1] == '>' || p[n - 1] == ' ' || p[n - 1] == '\t')
+				n--;
+			else if (n >= 2 && (unsigned char) p[n - 2] == 0xc2 &&
+			         (unsigned char) p[n - 1] == 0xbb)
+				n -= 2;
+			else
+				break;
+		}
+		p[n] = 0;
+		g_strlcpy (nick, p, nick_size);
+		g_free (stripped);
+	}
+
+	if (right_len > 0)
+	{
+		char *raw = g_strndup (right, MIN (right_len, 120));
+		char *stripped = strip_color (raw, -1, STRIP_ALL);
+
+		g_free (raw);
+		g_strstrip (stripped);
+		g_strlcpy (preview, stripped, preview_size);
+		g_free (stripped);
+	}
+}
+
+gboolean
+text_reply_quote_from_db (struct scrollback_db *db, const char *channel,
+                          const char *target_msgid,
+                          char *nick, gsize nick_size,
+                          char *preview, gsize preview_size)
+{
+	char *text;
+
+	nick[0] = 0;
+	preview[0] = 0;
+	if (!db || !channel || !target_msgid || !target_msgid[0])
+		return FALSE;
+	text = scrollback_get_text_by_msgid (db, channel, target_msgid);
+	if (!text)
+		return FALSE;
+	text_reply_quote (text, (int) strlen (text), -1, nick, nick_size, preview, preview_size);
+	g_free (text);
+	return TRUE;
+}
+
+gboolean
+text_reply_quote_from_store (session *sess, const char *target_msgid,
+                             char *nick, gsize nick_size,
+                             char *preview, gsize preview_size)
+{
+	scrollback_db *db = sess ? get_scrollback_db (sess) : NULL;
+
+	if (!db || !sess->channel[0])
+	{
+		nick[0] = 0;
+		preview[0] = 0;
+		return FALSE;
+	}
+	return text_reply_quote_from_db (db, sess->channel, target_msgid,
+	                                 nick, nick_size, preview, preview_size);
+}
+
 /* IRCv3 replies: persist reply context to scrollback */
 void
 scrollback_save_reply_for_session (session *sess, const char *msgid,
@@ -2289,7 +2403,39 @@ text_color_of (char *name)
 }
 
 
-const char *text_inbound_msgid = NULL;
+static const char *text_inbound_msgid = NULL;
+static GSList *text_inbound_msgid_taken = NULL;	/* sessions whose row has it this dispatch */
+
+void
+text_inbound_msgid_begin (const char *msgid)
+{
+	text_inbound_msgid = msgid;
+	g_slist_free (text_inbound_msgid_taken);
+	text_inbound_msgid_taken = NULL;
+}
+
+void
+text_inbound_msgid_end (void)
+{
+	text_inbound_msgid = NULL;
+	g_slist_free (text_inbound_msgid_taken);
+	text_inbound_msgid_taken = NULL;
+}
+
+const char *
+text_inbound_msgid_suspend (void)
+{
+	const char *saved = text_inbound_msgid;
+
+	text_inbound_msgid = NULL;
+	return saved;
+}
+
+void
+text_inbound_msgid_resume (const char *saved)
+{
+	text_inbound_msgid = saved;
+}
 
 /* called by EMIT_SIGNAL macro */
 
@@ -2394,12 +2540,15 @@ text_emit (int index, session *sess, char *a, char *b, char *c, char *d,
 		sound_play_event (index);
 	/* Events raised while an inbound tagged line is being dispatched
 	 * inherit its msgid for the scrollback row (message handlers set
-	 * current_msgid themselves and are left alone). */
-	if (!sess->current_msgid && text_inbound_msgid && text_inbound_msgid[0])
+	 * current_msgid themselves and are left alone) — the first event per
+	 * session only; see text_inbound_msgid_begin. */
+	if (!sess->current_msgid && text_inbound_msgid && text_inbound_msgid[0] &&
+	    !g_slist_find (text_inbound_msgid_taken, sess))
 	{
 		sess->current_msgid = g_strdup (text_inbound_msgid);
 		sess->current_msgid_is_user_msg = FALSE;
 		borrowed_msgid = TRUE;
+		text_inbound_msgid_taken = g_slist_prepend (text_inbound_msgid_taken, sess);
 	}
 	display_event (sess, index, word, stripcolor_args, timestamp);
 	if (borrowed_msgid && is_session (sess))

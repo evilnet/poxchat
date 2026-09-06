@@ -12238,15 +12238,39 @@ gtk_xtext_virt_materialize_msg (xtext_buffer *buf, scrollback_msg *msg)
 		if (r)
 		{
 			guint64 target_id = 0;
+			const char *nick = r->target_nick;
+			const char *preview = r->target_preview;
+			char qnick[128] = "";
+			char qpreview[81] = "";
+
 			if (r->target_msgid && r->target_msgid[0])
 			{
 				textentry *orig = gtk_xtext_find_by_msgid (buf, r->target_msgid);
 				if (orig)
 					target_id = orig->entry_id;
+				/* A row stored without a quote (target not on screen at
+				 * the time) is quoted now, from the entry or the store,
+				 * instead of drawing "(unknown message)". */
+				if (!nick || !nick[0])
+				{
+					if (orig)
+						text_reply_quote ((const char *) orig->str, orig->str_len,
+						                  orig->left_len, qnick, sizeof (qnick),
+						                  qpreview, sizeof (qpreview));
+					else
+						text_reply_quote_from_db ((scrollback_db *) buf->virt_db,
+						                          buf->virt_channel, r->target_msgid,
+						                          qnick, sizeof (qnick),
+						                          qpreview, sizeof (qpreview));
+					if (qnick[0])
+					{
+						nick = qnick;
+						preview = qpreview;
+					}
+				}
 			}
 			gtk_xtext_entry_set_reply (buf, ent, r->target_msgid,
-			                            r->target_nick, r->target_preview,
-			                            target_id);
+			                            nick, preview, target_id);
 			if (owned)
 				scrollback_reply_free (r);
 		}

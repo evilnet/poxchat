@@ -376,6 +376,13 @@ gint64 scrollback_get_rowid_by_msgid (scrollback_db *db, const char *channel,
                                        const char *msgid);
 
 /**
+ * The stored formatted text of a message by its IRCv3 msgid, for quoting
+ * a reply target that is not on screen.  Caller frees; NULL if not found.
+ */
+char *scrollback_get_text_by_msgid (scrollback_db *db, const char *channel,
+                                    const char *msgid);
+
+/**
  * Search message text using SQL LIKE pattern.
  * Returns matching messages in chronological order.
  * Only id, channel, and text fields are populated in the results.

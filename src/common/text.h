@@ -85,12 +85,38 @@ int get_stamp_str (char *fmt, time_t tim, char **ret);
 void format_event (session *sess, int index, char **args, char *o, gsize sizeofo, unsigned int stripcolor_args);
 void text_record_event (session *sess, char *text, time_t stamp, const char *msgid);
 
-/* msgid of the inbound line currently being dispatched (NULL outside
- * dispatch).  Text events it produces that don't set their own
- * current_msgid — JOIN/PART/QUIT/MODE/NICK/TOPIC lines — are stored with
- * it, so event-playback replays of the same event dedupe against the
- * live row and the newest-msgid catch-up anchor stays current. */
-extern const char *text_inbound_msgid;
+/* The msgid of the inbound line being dispatched.  Text events it raises
+ * that don't set their own current_msgid — JOIN/PART/QUIT/MODE/NICK/TOPIC
+ * lines — store it, so event-playback replays of the same line dedupe
+ * against the live row and the newest-msgid catch-up anchor stays current.
+ * One row per session per line carries it: a second event from the same
+ * line (a multi-mode MODE) would collide with the first on the store's
+ * unique (channel, msgid) and be dropped.  Local annotations raised while
+ * a line is dispatched (the reconnect marker) must not borrow it at all —
+ * bracket them with suspend/resume. */
+void text_inbound_msgid_begin (const char *msgid);
+void text_inbound_msgid_end (void);
+const char *text_inbound_msgid_suspend (void);
+void text_inbound_msgid_resume (const char *saved);
+
+/* Reply quotes ("> <nick> preview").  text is a formatted line: either
+ * the stored "<nick>\tmessage" form (left_len < 0 — split at the tab) or an
+ * xtext entry's str, whose left part is left_len bytes followed by one
+ * space.  Colour codes are stripped, the nick's <> / «» trimmed, the
+ * preview cut to fit. */
+void text_reply_quote (const char *text, int len, int left_len,
+                       char *nick, gsize nick_size,
+                       char *preview, gsize preview_size);
+/* The same from the stored copy of target_msgid, for a target that is not
+ * on screen.  FALSE (and empty buffers) when the store has no such row. */
+struct scrollback_db;
+gboolean text_reply_quote_from_db (struct scrollback_db *db, const char *channel,
+                                   const char *target_msgid,
+                                   char *nick, gsize nick_size,
+                                   char *preview, gsize preview_size);
+gboolean text_reply_quote_from_store (session *sess, const char *target_msgid,
+                                      char *nick, gsize nick_size,
+                                      char *preview, gsize preview_size);
 char *text_find_format_string (char *name);
 
 extern const gchar* unicode_fallback_string;

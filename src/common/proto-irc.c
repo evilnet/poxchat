@@ -2613,7 +2613,7 @@ irc_inline (server *serv, char *buf, int len)
 	}
 
 	/* see if the second word is a numeric */
-	text_inbound_msgid = tags_data.msgid;
+	text_inbound_msgid_begin (tags_data.msgid);
 	if (isdigit ((unsigned char) word[2][0]))
 	{
 		text = word_eol[4];
@@ -2627,7 +2627,7 @@ irc_inline (server *serv, char *buf, int len)
 	}
 
 xit:
-	text_inbound_msgid = NULL;
+	text_inbound_msgid_end ();
 	message_tags_data_free (&tags_data);
 	g_free (pdibuf);
 }

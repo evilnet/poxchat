@@ -2421,12 +2421,11 @@ void
 fe_reply_context_set (session *sess, const char *reply_msgid)
 {
 	xtext_buffer *buf;
-	textentry *new_ent;
+	textentry *new_ent = NULL;
 	textentry *orig;
-	const char *orig_nick = NULL;
-	char *stripped_nick = NULL;
-	char *stripped_preview = NULL;
+	char nick[128] = "";
 	char preview[81] = "";
+	gboolean quoted = FALSE;
 	guint64 orig_id = 0;
 
 	if (!sess || !sess->res || !sess->res->buffer || !reply_msgid)
@@ -2434,86 +2433,47 @@ fe_reply_context_set (session *sess, const char *reply_msgid)
 
 	buf = sess->res->buffer;
 
-	/* Find the entry to attach reply context to.
-	 * For echo-confirmed messages, the entry has its msgid set already (from fe_confirm_entry).
-	 * For non-echo messages, the entry was just appended and is the last one.
-	 * Try by current_msgid first (set by inbound_chanmsg), then fall back to last. */
-	new_ent = NULL;
+	/* The reply's own entry.  A line with a msgid carries it on its entry
+	 * (fe_print_text / fe_confirm_entry); a miss means the line was not
+	 * materialized — the tab is scrolled up with a full window, or a
+	 * sorted insert fell outside it — and there is nothing to hang the
+	 * quote on.  Never fall back to "the last entry": that attached
+	 * replies to unrelated lines and persisted them that way.  The row
+	 * is still written below, so the quote is there when the line pages
+	 * in.  Only a line without any msgid is the just-appended last entry. */
 	if (sess->current_msgid)
 		new_ent = gtk_xtext_find_by_msgid (buf, sess->current_msgid);
-	if (!new_ent)
+	else
 		new_ent = gtk_xtext_buffer_get_last (buf);
-	if (!new_ent)
-		return;
 
-	/* Try to resolve the referenced message */
+	/* Quote the target from its entry when it is on screen, else from
+	 * the store — a target that arrived while scrolled up is in the DB
+	 * even though it is not materialized. */
 	orig = gtk_xtext_find_by_msgid (buf, reply_msgid);
 	if (orig)
 	{
-		const unsigned char *str = gtk_xtext_entry_get_str (orig);
-		int str_len = gtk_xtext_entry_get_str_len (orig);
-		int left_len = gtk_xtext_entry_get_left_len (orig);
-
 		orig_id = gtk_xtext_get_entry_id (orig);
-
-		/* Extract nick from left portion, stripping all format codes */
-		if (left_len > 0 && str)
-		{
-			char *raw_nick = g_strndup ((const char *)str, left_len);
-			char *p;
-			stripped_nick = strip_color (raw_nick, -1, STRIP_ALL);
-			g_free (raw_nick);
-			/* Trim surrounding brackets/punctuation like <nick> or «nick» */
-			p = stripped_nick;
-			while (*p && (*p == '<' || *p == '\xc2'))  /* skip < or « (UTF-8: C2 AB) */
-			{
-				if (*p == '<') { p++; break; }
-				if (*p == '\xc2' && *(p+1) == '\xab') { p += 2; break; }
-				break;
-			}
-			orig_nick = p;
-			/* Trim trailing > or » and whitespace */
-			{
-				int len = strlen (orig_nick);
-				while (len > 0)
-				{
-					char c = orig_nick[len - 1];
-					if (c == '>' || c == ' ' || c == '\t')
-						len--;
-					else if (len >= 2 && (unsigned char)orig_nick[len - 2] == 0xc2 &&
-					         (unsigned char)orig_nick[len - 1] == 0xbb)
-						len -= 2;  /* » */
-					else
-						break;
-				}
-				/* Write NUL into stripped_nick (which we own) */
-				((char *)orig_nick)[len] = '\0';
-			}
-		}
-
-		/* Build preview from the right portion (message text after separator) */
-		if (str && str_len > left_len)
-		{
-			char *raw_preview = g_strndup ((const char *)(str + left_len), MIN (str_len - left_len, 120));
-			stripped_preview = strip_color (raw_preview, -1, STRIP_ALL);
-			g_free (raw_preview);
-			g_strlcpy (preview, stripped_preview, sizeof (preview));
-		}
+		text_reply_quote ((const char *) gtk_xtext_entry_get_str (orig),
+		                  gtk_xtext_entry_get_str_len (orig),
+		                  gtk_xtext_entry_get_left_len (orig),
+		                  nick, sizeof (nick), preview, sizeof (preview));
+		quoted = nick[0] != 0;
 	}
+	else
+		quoted = text_reply_quote_from_store (sess, reply_msgid,
+		                                      nick, sizeof (nick),
+		                                      preview, sizeof (preview));
 
-	gtk_xtext_entry_set_reply (buf, new_ent,
-	                           reply_msgid, orig_nick, preview, orig_id);
+	if (new_ent)
+		gtk_xtext_entry_set_reply (buf, new_ent, reply_msgid,
+		                           quoted ? nick : NULL,
+		                           quoted ? preview : NULL, orig_id);
 
-	/* Persist reply context to scrollback (if this entry has a msgid) */
-	{
-		const char *new_msgid = gtk_xtext_get_msgid (new_ent);
-		if (new_msgid)
-			scrollback_save_reply_for_session (sess, new_msgid,
-			                                   reply_msgid, orig_nick, preview);
-	}
-
-	g_free (stripped_nick);
-	g_free (stripped_preview);
+	/* Persist against the reply's own msgid, entry or not */
+	if (sess->current_msgid)
+		scrollback_save_reply_for_session (sess, sess->current_msgid, reply_msgid,
+		                                   quoted ? nick : NULL,
+		                                   quoted ? preview : NULL);
 }
 
 void fe_reply_state_changed (session *sess);
@@ -2617,6 +2577,8 @@ fe_scrollback_reply_attach (session *sess, const char *entry_msgid,
 	textentry *ent;
 	textentry *orig;
 	guint64 orig_id = 0;
+	char nick[128] = "";
+	char preview[81] = "";
 
 	if (!sess || !sess->res || !sess->res->buffer || !entry_msgid || !target_msgid)
 		return;
@@ -2632,6 +2594,25 @@ fe_scrollback_reply_attach (session *sess, const char *entry_msgid,
 	orig = gtk_xtext_find_by_msgid (buf, target_msgid);
 	if (orig)
 		orig_id = gtk_xtext_get_entry_id (orig);
+
+	/* A stored row without a quote (its target was not on screen when
+	 * the reply arrived) is quoted now, from the entry or the store. */
+	if (!target_nick || !target_nick[0])
+	{
+		if (orig)
+			text_reply_quote ((const char *) gtk_xtext_entry_get_str (orig),
+			                  gtk_xtext_entry_get_str_len (orig),
+			                  gtk_xtext_entry_get_left_len (orig),
+			                  nick, sizeof (nick), preview, sizeof (preview));
+		else
+			text_reply_quote_from_store (sess, target_msgid, nick, sizeof (nick),
+			                             preview, sizeof (preview));
+		if (nick[0])
+		{
+			target_nick = nick;
+			target_preview = preview;
+		}
+	}
 
 	gtk_xtext_entry_set_reply (buf, ent,
 	                           target_msgid, target_nick, target_preview, orig_id);
