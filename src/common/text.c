@@ -283,6 +283,18 @@ scrollback_remove_reaction_for_session (session *sess, const char *target_msgid,
 		                            reaction_text, nick);
 }
 
+/* g_strlcpy that never leaves a cut UTF-8 sequence at the end: the quote
+ * goes straight to Pango, which drops a line with invalid UTF-8. */
+static void
+text_copy_utf8 (char *dst, gsize dst_size, const char *src)
+{
+	const char *end;
+
+	g_strlcpy (dst, src, dst_size);
+	if (!g_utf8_validate (dst, -1, &end))
+		dst[end - dst] = 0;
+}
+
 void
 text_reply_quote (const char *text, int len, int left_len,
                   char *nick, gsize nick_size,
@@ -344,7 +356,7 @@ text_reply_quote (const char *text, int len, int left_len,
 				break;
 		}
 		p[n] = 0;
-		g_strlcpy (nick, p, nick_size);
+		text_copy_utf8 (nick, nick_size, p);
 		g_free (stripped);
 	}
 
@@ -352,10 +364,16 @@ text_reply_quote (const char *text, int len, int left_len,
 	{
 		char *raw = g_strndup (right, MIN (right_len, 120));
 		char *stripped = strip_color (raw, -1, STRIP_ALL);
+		char *p = stripped;
 
 		g_free (raw);
-		g_strstrip (stripped);
-		g_strlcpy (preview, stripped, preview_size);
+		/* A target that is itself a reply starts with the reply-arrow
+		 * sentinel (U+FDD0) the inbound path prepends; it is not text. */
+		if ((unsigned char) p[0] == 0xef && (unsigned char) p[1] == 0xb7 &&
+		    (unsigned char) p[2] == 0x90)
+			p += 3;
+		g_strstrip (p);
+		text_copy_utf8 (preview, preview_size, p);
 		g_free (stripped);
 	}
 }
@@ -377,7 +395,7 @@ text_reply_quote_from_db (struct scrollback_db *db, const char *channel,
 		return FALSE;
 	text_reply_quote (text, (int) strlen (text), -1, nick, nick_size, preview, preview_size);
 	g_free (text);
-	return TRUE;
+	return nick[0] != 0;		/* a row without a nick column quotes nothing */
 }
 
 gboolean

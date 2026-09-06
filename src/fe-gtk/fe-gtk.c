@@ -2444,7 +2444,14 @@ fe_reply_context_set (session *sess, const char *reply_msgid)
 	if (sess->current_msgid)
 		new_ent = gtk_xtext_find_by_msgid (buf, sess->current_msgid);
 	else
+	{
+		/* No msgid on the line: it is the entry just appended — unless
+		 * the append was skipped, in which case the tail belongs to some
+		 * earlier line and has a msgid of its own. */
 		new_ent = gtk_xtext_buffer_get_last (buf);
+		if (new_ent && gtk_xtext_get_msgid (new_ent))
+			new_ent = NULL;
+	}
 
 	/* Quote the target from its entry when it is on screen, else from
 	 * the store — a target that arrived while scrolled up is in the DB

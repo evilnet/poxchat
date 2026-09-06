@@ -925,19 +925,37 @@ init_database (scrollback_db *sdb)
 		}
 	}
 
-	/* A reply cannot precede what it answers.  Reply rows keyed to a
-	 * message older than their target were written by the old attach
-	 * fallback: a reply whose own line was not materialized (tab scrolled
-	 * up, window full) got hung on the newest entry on screen instead,
-	 * and persisted that way.  Drop them; the fixed attach never writes
-	 * them again.  Cheap — both joins hit the (channel_id, msgid) index. */
-	sqlite3_exec (sdb->db,
-		"DELETE FROM replies WHERE id IN ("
-		"  SELECT r.id FROM replies r"
-		"  JOIN messages a ON a.channel_id = r.channel_id AND a.msgid = r.msgid"
-		"  JOIN messages b ON b.channel_id = r.channel_id AND b.msgid = r.target_msgid"
-		"  WHERE a.timestamp < b.timestamp)",
-		NULL, NULL, NULL);
+	/* One-shot repair (user_version 1): a reply cannot precede what it
+	 * answers.  Reply rows keyed to a message older than their target,
+	 * and without a quote, were written by the old attach fallback — a
+	 * reply whose own line was not materialized (tab scrolled up, window
+	 * full) got hung on the newest entry on screen instead, unquoted
+	 * because its target had arrived the same way.  Drop them; the fixed
+	 * attach never writes them again.  Driven from replies so the cost is
+	 * the reply count, not the message index; the nick test keeps a
+	 * legitimate own reply whose local stamp trails a skewed server clock. */
+	{
+		sqlite3_stmt *ver = NULL;
+		int user_version = 0;
+
+		if (sqlite3_prepare_v2 (sdb->db, "PRAGMA user_version", -1, &ver, NULL) == SQLITE_OK)
+		{
+			if (sqlite3_step (ver) == SQLITE_ROW)
+				user_version = sqlite3_column_int (ver, 0);
+			sqlite3_finalize (ver);
+		}
+		if (user_version < 1)
+		{
+			sqlite3_exec (sdb->db,
+				"DELETE FROM replies WHERE (target_nick IS NULL OR target_nick = '')"
+				"  AND EXISTS (SELECT 1 FROM messages a, messages b"
+				"    WHERE a.channel_id = replies.channel_id AND a.msgid = replies.msgid"
+				"      AND b.channel_id = replies.channel_id AND b.msgid = replies.target_msgid"
+				"      AND a.timestamp < b.timestamp);"
+				"PRAGMA user_version = 1;",
+				NULL, NULL, NULL);
+		}
+	}
 
 	return TRUE;
 }
