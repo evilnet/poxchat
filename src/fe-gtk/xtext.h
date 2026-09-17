@@ -255,6 +255,9 @@ typedef struct {
 	char *join_banner_text;			/* formatted self-join event text (owned) */
 	GHashTable *virt_prefetch_replies;	/* msgid -> scrollback_reply*, live only while a range loads */
 	GHashTable *virt_prefetch_reactions;	/* msgid -> GSList<scrollback_reaction*>, same lifetime */
+	guint virt_rebuild_depth;		/* >0 while ensure_range/recenter is rebuilding the window:
+									 * the value-changed handler must not re-enter it, and entry
+									 * side effects (badge growth scroll) must stay quiet */
 
 	int total_entries;				/* total messages in DB for this channel */
 	int mat_first_index;			/* 0-based index of text_first in total order */

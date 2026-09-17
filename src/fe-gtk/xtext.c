@@ -1213,6 +1213,12 @@ gtk_xtext_adjustment_changed (GtkAdjustment * adj, GtkXText * xtext)
 	if (!gtk_widget_get_realized (GTK_WIDGET (xtext)))
 		return;
 
+	/* Mid-rebuild the window is half-built (BUF_MAT_COUNT can be 0), so
+	 * every branch below would act on garbage and the load trigger would
+	 * re-enter ensure_range.  The rebuild re-places value itself. */
+	if (xtext->buffer->virt_rebuild_depth)
+		return;
+
 	/* Scrolling invalidates badge geometry — popover would float over the
 	 * wrong row.  Cheap to dismiss; user can re-hover. */
 	gtk_xtext_react_popover_hide (xtext);
@@ -12429,7 +12435,7 @@ gtk_xtext_virt_prefetch_begin (xtext_buffer *buf, GSList *msgs)
  * gap-walk and its anchor restore (the old anchors reference evicted
  * entries — the jump initiator re-places the scroll value itself). */
 static gboolean
-gtk_xtext_virt_recenter (xtext_buffer *buf, int want_start, int want_end)
+gtk_xtext_virt_recenter_impl (xtext_buffer *buf, int want_start, int want_end)
 {
 	scrollback_db *db = (scrollback_db *) buf->virt_db;
 	GSList *msgs, *iter;
@@ -12569,6 +12575,16 @@ gtk_xtext_virt_recenter (xtext_buffer *buf, int want_start, int want_end)
 	return TRUE;
 }
 
+static gboolean
+gtk_xtext_virt_recenter (xtext_buffer *buf, int want_start, int want_end)
+{
+	gboolean r;
+	buf->virt_rebuild_depth++;
+	r = gtk_xtext_virt_recenter_impl (buf, want_start, want_end);
+	buf->virt_rebuild_depth--;
+	return r;
+}
+
 /* Virtual scrollback (Phase 3+5): load/evict entries to maintain a window
  * of materialized entries around the given center_index.
  *
@@ -12578,7 +12594,7 @@ gtk_xtext_virt_recenter (xtext_buffer *buf, int want_start, int want_end)
  * (smart trigger in adjustment_changed). */
 
 static void
-gtk_xtext_virt_ensure_range (xtext_buffer *buf, int center_index, int radius)
+gtk_xtext_virt_ensure_range_impl (xtext_buffer *buf, int center_index, int radius)
 {
 	int want_start, want_end;
 	int mat_start, mat_end;
@@ -12936,6 +12952,21 @@ recompute:
 	         BUF_MAT_COUNT (buf), buf->mat_first_index,
 	         (et_work - et0) / 1000.0,
 	         (g_get_monotonic_time () - et_work) / 1000.0);
+}
+
+/* Re-entrancy guard around the window rebuild.  Anything the rebuild
+ * does that touches the adjustment (badge rehydration, anchor restore)
+ * can emit value-changed synchronously; with the window half-built,
+ * gtk_xtext_adjustment_changed would see BUF_MAT_COUNT == 0 and start a
+ * nested ensure_range, whose prefetch_begin destroys the tables the outer
+ * materialize loop is still reading (use-after-free on search next/prev)
+ * and whose eviction frees entries the outer loop still holds. */
+static void
+gtk_xtext_virt_ensure_range (xtext_buffer *buf, int center_index, int radius)
+{
+	buf->virt_rebuild_depth++;
+	gtk_xtext_virt_ensure_range_impl (buf, center_index, radius);
+	buf->virt_rebuild_depth--;
 }
 
 /* Virtual scrollback: materialize the newest window on demand.
@@ -13812,7 +13843,11 @@ gtk_xtext_entry_add_reaction (xtext_buffer *buf, textentry *ent,
 			if (buf)
 			{
 				buf->num_lines += 1;
-				if (buf->xtext)
+				/* Rehydration during a window rebuild must not touch the
+				 * adjustment: the rebuild re-seeds it, and forcing
+				 * anchor_to_bottom here would snap a history scroll back
+				 * to the bottom on the first entry with a badge. */
+				if (buf->xtext && !buf->virt_rebuild_depth)
 				{
 					gtk_xtext_adjustment_set (buf);
 					if (was_at_bottom)
@@ -13825,7 +13860,7 @@ gtk_xtext_entry_add_reaction (xtext_buffer *buf, textentry *ent,
 				}
 			}
 		}
-		if (buf && buf->xtext)
+		if (buf && buf->xtext && !buf->virt_rebuild_depth)
 			gtk_widget_queue_draw (GTK_WIDGET (buf->xtext));
 	}
 }
