@@ -260,9 +260,11 @@ void chathistory_parse_isupport (server *serv, const char *value);
 
 /**
  * Parse the retention token into serv->chathistory_retention_secs and
- * dead-mark every ledger gap the server can no longer fill (end bound
- * older than now - retention).  value NULL or the token's removal form
- * clears it back to unknown.
+ * publish the cutoff to the network's scrollback ledger, which parks
+ * (hides, never dead-marks) gaps ending before it.  The server advertises
+ * the widest retention over the stores currently linked and re-announces
+ * on change (draft/extended-isupport), so a relink widens the bound and
+ * wakes parked gaps.  value NULL or the token's removal form clears it.
  */
 void chathistory_parse_retention (server *serv, const char *value);
 

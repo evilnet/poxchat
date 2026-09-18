@@ -98,6 +98,9 @@ struct scrollback_db {
 	/* Gap ledger */
 	sqlite3_stmt *stmt_gap_list;
 	sqlite3_stmt *stmt_gap_ordinal;
+	gint64 retention_cutoff;         /* oldest ts the network can still serve (0 = unknown);
+	                                  * a gap ending before it is PARKED, never probed, never
+	                                  * dead-marked: the bound can widen (relink) and wake it */
 };
 
 /* Hash table of open databases: network -> scrollback_db */
@@ -3264,28 +3267,26 @@ scrollback_gap_drop_msgids (scrollback_db *db, gint64 gap_id)
 	return changed;
 }
 
-/* Dead-mark every live gap (any channel) whose end bound predates the
- * server's retention cutoff.  Returns the number of rows changed. */
-int
-scrollback_gap_expire (scrollback_db *db, gint64 cutoff_ts)
+/* Record the network's retention cutoff (now - widest retention any
+ * linked store advertises).  Parking is a comparison against this at
+ * read time, so widening the bound wakes parked gaps with no bookkeeping. */
+void
+scrollback_set_retention_cutoff (scrollback_db *db, gint64 cutoff_ts)
 {
-	sqlite3_stmt *stmt;
-	int changed = 0;
+	if (db)
+		db->retention_cutoff = cutoff_ts > 0 ? cutoff_ts : 0;
+}
 
-	if (!db || cutoff_ts <= 0)
-		return 0;
+gint64
+scrollback_get_retention_cutoff (scrollback_db *db)
+{
+	return db ? db->retention_cutoff : 0;
+}
 
-	if (sqlite3_prepare_v2 (db->db,
-		"UPDATE gaps SET state = ?1 WHERE state != ?1 AND end_ts < ?2",
-		-1, &stmt, NULL) != SQLITE_OK)
-		return 0;
-
-	sqlite3_bind_int (stmt, 1, SCROLLBACK_GAP_DEAD);
-	sqlite3_bind_int64 (stmt, 2, cutoff_ts);
-	if (sqlite3_step (stmt) == SQLITE_DONE)
-		changed = sqlite3_changes (db->db);
-	sqlite3_finalize (stmt);
-	return changed;
+gboolean
+scrollback_gap_is_parked (scrollback_db *db, const scrollback_gap *g)
+{
+	return db && g && db->retention_cutoff > 0 && g->end_ts < db->retention_cutoff;
 }
 
 /* Delete a channel's CANDIDATE gaps (bootstrap false positives), leaving
@@ -3397,7 +3398,7 @@ scrollback_gap_ordinal (scrollback_db *db, const char *channel, gint64 end_ts)
  * candidates recorded, or -1 if already done / bad args / error. */
 int
 scrollback_gap_bootstrap (scrollback_db *db, const char *channel,
-                          gint64 threshold_secs, gint64 min_end_ts)
+                          gint64 threshold_secs)
 {
 	gint64 channel_id;
 	sqlite3_stmt *stmt = NULL;
@@ -3447,10 +3448,10 @@ scrollback_gap_bootstrap (scrollback_db *db, const char *channel,
 		{
 			gint64 ts = sqlite3_column_int64 (stmt, 0);
 			const char *msgid = (const char *) sqlite3_column_text (stmt, 1);
-			/* A span ending before the retention cutoff is unfillable;
-			 * don't record a candidate just to watch it die. */
-			if (prev_ts > 0 && ts - prev_ts >= threshold_secs &&
-			    (min_end_ts <= 0 || ts >= min_end_ts))
+			/* Candidates past the retention cutoff are still recorded:
+			 * parking hides them, and a later widening of the bound
+			 * (relink) wakes them.  Nothing is lost to a hint. */
+			if (prev_ts > 0 && ts - prev_ts >= threshold_secs)
 			{
 				if (scrollback_gap_record (db, channel, prev_ts, prev_msgid,
 				                           ts, msgid,

@@ -473,14 +473,10 @@ gap_bootstrap_idle_cb (gpointer data)
 {
 	gap_bootstrap_req *req = data;
 	scrollback_db *db = scrollback_open (req->network);
-	gboolean live = is_session (req->sess);
-	/* Skip candidates the server can no longer fill (0 if retention is
-	 * unknown yet — the connect-time sweep retires those later). */
-	gint64 cutoff = live ? chathistory_retention_cutoff (req->sess->server) : 0;
 
 	if (db && scrollback_gap_bootstrap (db, req->channel,
-		(gint64) prefs.hex_irc_gapfill_bootstrap_hours * 3600, cutoff) > 0 &&
-	    live)
+		(gint64) prefs.hex_irc_gapfill_bootstrap_hours * 3600) > 0 &&
+	    is_session (req->sess))
 		fe_gap_updated (req->sess, 0);
 
 	g_free (req->network);

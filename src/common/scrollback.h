@@ -513,15 +513,16 @@ gboolean scrollback_gap_drop_msgids (scrollback_db *db, gint64 gap_id);
 int scrollback_gap_reset (scrollback_db *db, const char *channel, gint64 gap_id);
 
 /**
- * Dead-mark every live gap in the network whose end bound predates
- * cutoff_ts: nothing in such a span exists server-side any more, so it
- * can never be filled.  Driven by the server's advertised retention
- * period.  A gap that merely starts before the cutoff is left alone —
- * its recent part is still fillable and the normal fill shrinks it.
- *
- * @return Number of rows dead-marked.
+ * Retention cutoff for the network: now - the widest retention any linked
+ * store advertises (evilnet/CHATHISTORYRETENTION).  In-memory only; set on
+ * every 005 and re-announcement.  A gap whose end bound predates it is
+ * "parked": no marker, no probe, but never dead-marked -- the bound can
+ * widen when a store relinks, and the comparison then wakes it.  Only a
+ * real answer (an empty, complete page over its span) closes a gap.
  */
-int scrollback_gap_expire (scrollback_db *db, gint64 cutoff_ts);
+void     scrollback_set_retention_cutoff (scrollback_db *db, gint64 cutoff_ts);
+gint64   scrollback_get_retention_cutoff (scrollback_db *db);
+gboolean scrollback_gap_is_parked (scrollback_db *db, const scrollback_gap *g);
 
 /**
  * Delete a channel's CANDIDATE-state gaps, leaving WITNESSED and DEAD
@@ -554,15 +555,11 @@ int scrollback_gap_ordinal (scrollback_db *db, const char *channel, gint64 end_t
  * channels.gap_bootstrap_done so it never rescans a channel, even if it
  * found nothing the first time.
  *
- * min_end_ts > 0 skips any candidate whose end bound is older than it —
- * the server's retention cutoff, past which a span is unfillable and a
- * candidate would only be recorded to die on its first probe.
- *
  * @return Candidates recorded (>= 0), or -1 if already done, or on
  *         bad args / error.
  */
 int scrollback_gap_bootstrap (scrollback_db *db, const char *channel,
-                              gint64 threshold_secs, gint64 min_end_ts);
+                              gint64 threshold_secs);
 
 /**
  * Begin a ref-counted transaction.  Multiple begin calls nest;

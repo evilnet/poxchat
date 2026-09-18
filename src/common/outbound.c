@@ -2486,8 +2486,7 @@ cmd_gaps (struct session *sess, char *tbuf, char *word[], char *word_eol[])
 		hours = prefs.hex_irc_gapfill_bootstrap_hours > 0
 			? prefs.hex_irc_gapfill_bootstrap_hours : GAP_RESCAN_DEFAULT_HOURS;
 		scrollback_gap_bootstrap_reset (db, sess->channel);
-		n = scrollback_gap_bootstrap (db, sess->channel, (gint64) hours * 3600,
-		                              chathistory_retention_cutoff (sess->server));
+		n = scrollback_gap_bootstrap (db, sess->channel, (gint64) hours * 3600);
 		PrintTextf (sess, _("Rescanned scrollback (%dh threshold): %d new gap(s) recorded.\n"), hours, n);
 		fe_gap_updated (sess, 0);
 		return TRUE;
@@ -2511,13 +2510,14 @@ cmd_gaps (struct session *sess, char *tbuf, char *word[], char *word_eol[])
 			time_t t;
 			const char *state = g->state == SCROLLBACK_GAP_DEAD ? "dead"
 				: g->state == SCROLLBACK_GAP_CANDIDATE ? "candidate" : "witnessed";
+			const char *parked = scrollback_gap_is_parked (db, g) ? " (parked: past retention)" : "";
 
 			t = (time_t) g->start_ts; tm = localtime (&t);
 			strftime (sbuf, sizeof (sbuf), "%Y-%m-%d %H:%M", tm);
 			t = (time_t) g->end_ts; tm = localtime (&t);
 			strftime (ebuf, sizeof (ebuf), "%Y-%m-%d %H:%M", tm);
-			PrintTextf (sess, "gap %" G_GINT64_FORMAT ": %s .. %s  %s  attempts=%d  anchors=%s/%s\n",
-			            g->id, sbuf, ebuf, state, g->attempts,
+			PrintTextf (sess, "gap %" G_GINT64_FORMAT ": %s .. %s  %s%s  attempts=%d  anchors=%s/%s\n",
+			            g->id, sbuf, ebuf, state, parked, g->attempts,
 			            g->start_msgid ? "msgid" : "ts", g->end_msgid ? "msgid" : "ts");
 			n++;
 		}

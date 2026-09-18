@@ -7435,6 +7435,11 @@ gtk_xtext_refresh_gap_cache (xtext_buffer *buf)
 		xtext_gap_info *gi;
 		if (g->state == SCROLLBACK_GAP_DEAD)
 			continue;
+		/* Parked (ends before the network's retention cutoff): no marker
+		 * and no proximity probe.  Not dead -- a widened bound on relink
+		 * makes the next refresh include it again. */
+		if (scrollback_gap_is_parked (buf->virt_db, g))
+			continue;
 		gi = g_new0 (xtext_gap_info, 1);
 		gi->gap_id = g->id;
 		gi->start_ts = g->start_ts;

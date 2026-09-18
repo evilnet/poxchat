@@ -571,17 +571,14 @@ chathistory_request_gap_fill (session *sess, gint64 gap_id, int approach_dir)
 		return FALSE;
 	}
 
-	/* Aged past the server's retention since the connect-time sweep:
-	 * unfillable, so retire it here rather than spend a request. */
+	/* Parked: ends before the network's retention cutoff, so no linked
+	 * store can serve it right now.  Don't spend a request -- and don't
+	 * dead-mark: the bound can widen (a store relinks) and this gap is
+	 * then probed normally.  Retention is a hint, never a verdict. */
+	if (scrollback_gap_is_parked (db, &gap))
 	{
-		gint64 cutoff = chathistory_retention_cutoff (sess->server);
-		if (cutoff > 0 && gap.end_ts < cutoff)
-		{
-			scrollback_gap_set_state (db, gap_id, SCROLLBACK_GAP_DEAD);
-			fe_gap_updated (sess, gap_id);
-			scrollback_gap_clear (&gap);
-			return FALSE;
-		}
+		scrollback_gap_clear (&gap);
+		return FALSE;
 	}
 
 	/* Ledger backoff: 5s per prior attempt, capped at 60s */
@@ -2478,17 +2475,20 @@ chathistory_parse_retention (server *serv, const char *value)
 			serv->chathistory_retention_secs = secs;
 	}
 
-	/* Retire every ledger gap that now lies entirely past retention.
-	 * Nothing in such a span exists server-side, so probing it can only
-	 * produce an empty batch and a dead-mark — do the dead-mark now, for
-	 * free, before any of them sits in a viewport and fires a request. */
+	/* Publish the cutoff to the network's ledger.  Gaps ending before it
+	 * are parked (no marker, no probe) by comparison at read time, so a
+	 * re-announced wider bound -- a store relinked -- wakes them with no
+	 * further bookkeeping.  Nothing is ever dead-marked on retention:
+	 * only an empty, complete answer to a real probe closes a gap.  The
+	 * server promises the value is the widest retention over the stores
+	 * currently linked (local included), which is what makes parking on
+	 * it safe: a span past it is unservable *right now*, not gone. */
 	cutoff = chathistory_retention_cutoff (serv);
-	if (cutoff <= 0)
-		return;
 	network = server_get_network (serv, FALSE);
 	db = network ? scrollback_open (network) : NULL;
-	if (!db || scrollback_gap_expire (db, cutoff) == 0)
+	if (!db || scrollback_get_retention_cutoff (db) == cutoff)
 		return;
+	scrollback_set_retention_cutoff (db, cutoff);
 	for (list = sess_list; list; list = list->next)
 	{
 		session *sess = list->data;
