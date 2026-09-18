@@ -2304,6 +2304,16 @@ process_multiline_batch (server *serv, batch_info *batch)
 	/* Display combined message if we have content */
 	if (combined_text->len > 0 && nick)
 	{
+		/* Self-message: a bouncer (or echo-message) handing us a multi-line
+		 * PM that we sent from another connection.  It belongs in the
+		 * dialog with the TARGET, exactly as the single-line self-message
+		 * path in proto-irc.c routes it; inbound_privmsg() keys the dialog
+		 * on the SOURCE, which here is ourselves.  Keyed on is_channel()
+		 * rather than sess->type: the server-session fallback is not a
+		 * channel either, and must not spawn a dialog named "#chan". */
+		gboolean self_pm = target && !is_channel (serv, (char *)target)
+		                   && !serv->p_cmp (nick, serv->nick);
+
 		/* Initialize tags data from first message */
 		memset (&tags_data, 0, sizeof (tags_data));
 		if (first_msg)
@@ -2315,6 +2325,15 @@ process_multiline_batch (server *serv, batch_info *batch)
 				tags_data.all_tags = first_msg->tags;
 		}
 
+		if (self_pm)
+		{
+			session *dlg = find_dialog (serv, (char *)target);
+			if (!dlg)
+				dlg = new_ircwindow (serv, (char *)target, SESS_DIALOG, 0);
+			if (dlg)
+				sess = dlg;
+		}
+
 		/* Group all entries from this multiline batch for unified hover highlight */
 		fe_begin_multiline_group (sess);
 
@@ -2323,6 +2342,11 @@ process_multiline_batch (server *serv, batch_info *batch)
 		{
 			inbound_chanmsg (serv, sess, sess->channel, nick, combined_text->str,
 			                 FALSE, 0, &tags_data);
+		}
+		else if (self_pm)
+		{
+			inbound_chanmsg (serv, sess, (char *)target, nick, combined_text->str,
+			                 TRUE, 0, &tags_data);
 		}
 		else
 		{
