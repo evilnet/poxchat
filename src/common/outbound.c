@@ -2442,7 +2442,11 @@ cmd_markread (struct session *sess, char *tbuf, char *word[], char *word_eol[])
 /* /GAPS — inspect and reset the chathistory gap ledger for this tab.
  *   /GAPS              list the ledger rows
  *   /GAPS RESET [id]   put all (or one) back to witnessed, no anchors
- *   /GAPS RESCAN       clear the bootstrap latch and rescan for holes */
+ *   /GAPS RESCAN       clear the bootstrap latch and rescan for holes
+ *                      (channels only; 12h threshold when the pref is 0)
+ *   /GAPS CLEAR        delete this tab's candidate gaps (bootstrap
+ *                      guesses); witnessed and dead rows are kept */
+#define GAP_RESCAN_DEFAULT_HOURS 12
 static int
 cmd_gaps (struct session *sess, char *tbuf, char *word[], char *word_eol[])
 {
@@ -2473,11 +2477,25 @@ cmd_gaps (struct session *sess, char *tbuf, char *word[], char *word_eol[])
 	}
 	if (!g_ascii_strcasecmp (sub, "RESCAN"))
 	{
-		int n;
+		int n, hours;
+		if (sess->type != SESS_CHANNEL)
+		{
+			PrintText (sess, _("Gap bootstrap is for channels; DM catch-up is driven by CHATHISTORY TARGETS.\n"));
+			return TRUE;
+		}
+		hours = prefs.hex_irc_gapfill_bootstrap_hours > 0
+			? prefs.hex_irc_gapfill_bootstrap_hours : GAP_RESCAN_DEFAULT_HOURS;
 		scrollback_gap_bootstrap_reset (db, sess->channel);
-		n = scrollback_gap_bootstrap (db, sess->channel,
-			(gint64) prefs.hex_irc_gapfill_bootstrap_hours * 3600);
-		PrintTextf (sess, _("Rescanned scrollback: %d new gap(s) recorded.\n"), n);
+		n = scrollback_gap_bootstrap (db, sess->channel, (gint64) hours * 3600,
+		                              chathistory_retention_cutoff (sess->server));
+		PrintTextf (sess, _("Rescanned scrollback (%dh threshold): %d new gap(s) recorded.\n"), hours, n);
+		fe_gap_updated (sess, 0);
+		return TRUE;
+	}
+	if (!g_ascii_strcasecmp (sub, "CLEAR"))
+	{
+		int n = scrollback_gap_delete_candidates (db, sess->channel);
+		PrintTextf (sess, _("Cleared %d candidate gap(s); witnessed and dead rows kept.\n"), n);
 		fe_gap_updated (sess, 0);
 		return TRUE;
 	}
@@ -4970,7 +4988,7 @@ const struct commands xc_cmds[] = {
 	{"FLUSHQ", cmd_flushq, 0, 0, 1,
 	 N_("FLUSHQ, flushes the current server's send queue")},
 	{"GAPS", cmd_gaps, 1, 0, 1,
-	 N_("GAPS [RESET [id]|RESCAN], lists, resets or rescans the chathistory gap ledger for this tab")},
+	 N_("GAPS [RESET [id]|RESCAN|CLEAR], lists, resets, rescans (channels) or clears candidate gaps in the chathistory gap ledger for this tab")},
 	{"GATE", cmd_gate, 0, 0, 1,
 	 N_("GATE <host> [<port>], proxies through a host, port defaults to 23")},
 	{"GETBOOL", cmd_getbool, 0, 0, 1, "GETBOOL <command> <title> <text>"},

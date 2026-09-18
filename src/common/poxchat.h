@@ -661,6 +661,7 @@ typedef struct server
 	char *bad_nick_prefixes;		/* for ircd that doesn't give the modes */
 	int modes_per_line;				/* 6 on undernet, 4 on efnet etc... */
 	int chathistory_limit;			/* max messages per CHATHISTORY request (from ISUPPORT) */
+	gint64 chathistory_retention_secs;	/* server history retention (ISUPPORT evilnet/CHATHISTORYRETENTION); 0 = unknown */
 	guint chathistory_start_timer;	/* deferred LATEST: 2s after last 366 */
 	guint chathistory_before_timer;	/* delay between BEFORE catch-up requests */
 	int chathistory_latest_pending;	/* count of sessions awaiting LATEST response */

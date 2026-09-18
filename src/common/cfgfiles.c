@@ -851,7 +851,13 @@ load_default_config(void)
 	prefs.hex_irc_chathistory_background_delay = 10; /* seconds between background fetches */
 	prefs.hex_irc_chathistory_background_max_age = 24; /* max hours to fetch in background (0 = unlimited) */
 	prefs.hex_irc_gapfill = 1;  /* gap ledger + fill (default: enabled) */
-	prefs.hex_irc_gapfill_bootstrap_hours = 12; /* candidate threshold; 0 disables bootstrap */
+	/* Bootstrap candidate threshold (channels only; 0 disables the scan,
+	 * /GAPS RESCAN then uses 12h).  A local silence can't tell "quiet
+	 * channel" from "this client was detached", so candidates are guesses
+	 * that self-verify on first probe — but they're the only way to find
+	 * interior holes that predate the ledger, which scroll-to-top can't
+	 * reach. */
+	prefs.hex_irc_gapfill_bootstrap_hours = 12;
 	prefs.hex_irc_gapfill_catchup_budget = 500; /* eager-close budget per channel */
 	prefs.hex_irc_logging = 1;
 	prefs.hex_irc_react_show = 1;

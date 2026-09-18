@@ -10,6 +10,14 @@
 static const char *test_xdir = ".";
 char *get_xdir (void) { return (char *) test_xdir; }
 void poxchat_timing_log (const char *fmt, ...) { (void) fmt; }
+/* scrollback.c strips color before FTS-indexing; the harness's test data is
+ * color-free, so a plain copy matches strip_color's semantics here. */
+char *strip_color (const char *text, int len, int flags)
+{
+	(void) flags;
+	if (len == -1) len = (int) strlen (text);
+	return g_strndup (text, len);
+}
 
 static int failures = 0;
 #define CHECK(name, cond) do { \
@@ -132,7 +140,7 @@ main (int argc, char **argv)
 		scrollback_db_save (db, "#boot", 2000, "b2", "b", TRUE);
 		scrollback_db_save (db, "#boot", 200000, "b3", "c", TRUE);
 		scrollback_commit_transaction (db);
-		CHECK ("bootstrap finds hole", scrollback_gap_bootstrap (db, "#boot", 12 * 3600) == 1);
+		CHECK ("bootstrap finds hole", scrollback_gap_bootstrap (db, "#boot", 12 * 3600, 0) == 1);
 		{
 			GList *l = scrollback_gap_list (db, "#boot");
 			CHECK ("bootstrap candidate", g_list_length (l) == 1 &&
@@ -143,7 +151,7 @@ main (int argc, char **argv)
 				g_strcmp0 (nth_gap (l, 0)->end_msgid, "b3") == 0);
 			scrollback_gap_list_free (l);
 		}
-		CHECK ("bootstrap latched", scrollback_gap_bootstrap (db, "#boot", 12 * 3600) == -1);
+		CHECK ("bootstrap latched", scrollback_gap_bootstrap (db, "#boot", 12 * 3600, 0) == -1);
 	}
 
 	/* bootstrap: a "pending:*" msgid is a client-local echo-message
@@ -155,7 +163,7 @@ main (int argc, char **argv)
 		scrollback_db_save (db, "#bootpending", 1000, "p1", "a", TRUE);
 		scrollback_db_save (db, "#bootpending", 200000, "pending:zzz", "b", TRUE);
 		scrollback_commit_transaction (db);
-		CHECK ("bootstrap pending finds hole", scrollback_gap_bootstrap (db, "#bootpending", 12 * 3600) == 1);
+		CHECK ("bootstrap pending finds hole", scrollback_gap_bootstrap (db, "#bootpending", 12 * 3600, 0) == 1);
 		{
 			GList *l = scrollback_gap_list (db, "#bootpending");
 			CHECK ("bootstrap suppresses pending placeholder", g_list_length (l) == 1 &&
@@ -163,6 +171,105 @@ main (int argc, char **argv)
 				nth_gap (l, 0)->end_ts == 200000 &&
 				g_strcmp0 (nth_gap (l, 0)->start_msgid, "p1") == 0 &&
 				nth_gap (l, 0)->end_msgid == NULL);
+			scrollback_gap_list_free (l);
+		}
+	}
+
+	/* delete_candidates: clears bootstrap false-positives (CANDIDATE) for a
+	 * channel while preserving WITNESSED (real observations) and DEAD
+	 * (settled conclusions).  Models the query-window cleanup: a DM gets
+	 * carpet-bombed with candidates by the old unconditional bootstrap. */
+	{
+		gint64 gc, gw, gd;
+		gc = scrollback_gap_record (db, "#cand", 1000, NULL, 100000, NULL,
+		                            SCROLLBACK_GAP_CANDIDATE);
+		gw = scrollback_gap_record (db, "#cand", 200000, "w1", 300000, "w2",
+		                            SCROLLBACK_GAP_WITNESSED);
+		gd = scrollback_gap_record (db, "#cand", 400000, NULL, 500000, NULL,
+		                            SCROLLBACK_GAP_WITNESSED);
+		scrollback_gap_set_state (db, gd, SCROLLBACK_GAP_DEAD);
+		CHECK ("delcand setup", gc > 0 && gw > 0 && gd > 0);
+
+		CHECK ("delcand deletes only candidates",
+		       scrollback_gap_delete_candidates (db, "#cand") == 1);
+		{
+			GList *l = scrollback_gap_list (db, "#cand");
+			gboolean has_w = FALSE, has_d = FALSE, has_c = FALSE;
+			GList *it;
+			for (it = l; it; it = it->next)
+			{
+				scrollback_gap *g = it->data;
+				if (g->state == SCROLLBACK_GAP_CANDIDATE) has_c = TRUE;
+				else if (g->state == SCROLLBACK_GAP_WITNESSED) has_w = TRUE;
+				else if (g->state == SCROLLBACK_GAP_DEAD) has_d = TRUE;
+			}
+			CHECK ("delcand keeps witnessed and dead",
+			       g_list_length (l) == 2 && has_w && has_d && !has_c);
+			scrollback_gap_list_free (l);
+		}
+		/* idempotent: a second sweep deletes nothing */
+		CHECK ("delcand idempotent",
+		       scrollback_gap_delete_candidates (db, "#cand") == 0);
+	}
+
+	/* expire: the server's retention cutoff dead-marks every live gap whose
+	 * END predates it, across channels and states; a gap that only STARTS
+	 * before the cutoff is still partly fillable and must be left alone. */
+	{
+		gint64 old_c, old_w, straddle, recent, already_dead;
+		old_c = scrollback_gap_record (db, "#exp1", 1000, NULL, 2000, NULL,
+		                               SCROLLBACK_GAP_CANDIDATE);
+		old_w = scrollback_gap_record (db, "#exp2", 3000, "a", 4000, "b",
+		                               SCROLLBACK_GAP_WITNESSED);
+		straddle = scrollback_gap_record (db, "#exp1", 5000, NULL, 20000, NULL,
+		                                  SCROLLBACK_GAP_CANDIDATE);
+		recent = scrollback_gap_record (db, "#exp2", 30000, NULL, 40000, NULL,
+		                                SCROLLBACK_GAP_WITNESSED);
+		already_dead = scrollback_gap_record (db, "#exp1", 100, NULL, 200, NULL,
+		                                      SCROLLBACK_GAP_WITNESSED);
+		scrollback_gap_set_state (db, already_dead, SCROLLBACK_GAP_DEAD);
+		CHECK ("expire setup", old_c > 0 && old_w > 0 && straddle > 0 &&
+		       recent > 0 && already_dead > 0);
+
+		/* cutoff 10000: old_c (end 2000) and old_w (end 4000) expire;
+		 * straddle (5000..20000) and recent survive; already_dead unchanged */
+		CHECK ("expire count", scrollback_gap_expire (db, 10000) == 2);
+		{
+			scrollback_gap g;
+			CHECK ("expire old candidate dead",
+			       scrollback_gap_get (db, old_c, &g) && g.state == SCROLLBACK_GAP_DEAD);
+			scrollback_gap_clear (&g);
+			CHECK ("expire old witnessed dead",
+			       scrollback_gap_get (db, old_w, &g) && g.state == SCROLLBACK_GAP_DEAD);
+			scrollback_gap_clear (&g);
+			CHECK ("expire leaves straddling gap live",
+			       scrollback_gap_get (db, straddle, &g) && g.state == SCROLLBACK_GAP_CANDIDATE);
+			scrollback_gap_clear (&g);
+			CHECK ("expire leaves recent gap live",
+			       scrollback_gap_get (db, recent, &g) && g.state == SCROLLBACK_GAP_WITNESSED);
+			scrollback_gap_clear (&g);
+		}
+		CHECK ("expire idempotent", scrollback_gap_expire (db, 10000) == 0);
+		CHECK ("expire no-op on unknown retention", scrollback_gap_expire (db, 0) == 0);
+	}
+
+	/* bootstrap with a retention cutoff: a hole ending before the cutoff
+	 * is never recorded (unfillable); one ending after it still is. */
+	{
+		scrollback_begin_transaction (db);
+		scrollback_db_save (db, "#bootcut", 1000, "c1", "a", TRUE);
+		scrollback_db_save (db, "#bootcut", 100000, "c2", "b", TRUE);	/* hole 1: ends 100000 */
+		scrollback_db_save (db, "#bootcut", 101000, "c3", "c", TRUE);
+		scrollback_db_save (db, "#bootcut", 300000, "c4", "d", TRUE);	/* hole 2: ends 300000 */
+		scrollback_commit_transaction (db);
+		CHECK ("bootstrap cutoff records only the fillable hole",
+		       scrollback_gap_bootstrap (db, "#bootcut", 12 * 3600, 200000) == 1);
+		{
+			GList *l = scrollback_gap_list (db, "#bootcut");
+			CHECK ("bootstrap cutoff kept the recent hole",
+			       g_list_length (l) == 1 &&
+			       nth_gap (l, 0)->start_ts == 101000 &&
+			       nth_gap (l, 0)->end_ts == 300000);
 			scrollback_gap_list_free (l);
 		}
 	}

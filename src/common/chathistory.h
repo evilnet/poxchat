@@ -253,6 +253,26 @@ void chathistory_handle_fail (server *serv, const char *code, const char *contex
 void chathistory_parse_isupport (server *serv, const char *value);
 
 /**
+ * ISUPPORT token advertising how long the server keeps history.
+ * Format: evilnet/CHATHISTORYRETENTION=<seconds>
+ */
+#define CHATHISTORY_RETENTION_TOKEN "evilnet/CHATHISTORYRETENTION"
+
+/**
+ * Parse the retention token into serv->chathistory_retention_secs and
+ * dead-mark every ledger gap the server can no longer fill (end bound
+ * older than now - retention).  value NULL or the token's removal form
+ * clears it back to unknown.
+ */
+void chathistory_parse_retention (server *serv, const char *value);
+
+/**
+ * Oldest timestamp the server can still serve, or 0 if retention is
+ * unknown.
+ */
+gint64 chathistory_retention_cutoff (server *serv);
+
+/**
  * Update session's msgid tracking.
  * Should be called when displaying messages to track oldest/newest msgids.
  *

@@ -473,10 +473,14 @@ gap_bootstrap_idle_cb (gpointer data)
 {
 	gap_bootstrap_req *req = data;
 	scrollback_db *db = scrollback_open (req->network);
+	gboolean live = is_session (req->sess);
+	/* Skip candidates the server can no longer fill (0 if retention is
+	 * unknown yet — the connect-time sweep retires those later). */
+	gint64 cutoff = live ? chathistory_retention_cutoff (req->sess->server) : 0;
 
 	if (db && scrollback_gap_bootstrap (db, req->channel,
-		(gint64) prefs.hex_irc_gapfill_bootstrap_hours * 3600) > 0 &&
-	    is_session (req->sess))
+		(gint64) prefs.hex_irc_gapfill_bootstrap_hours * 3600, cutoff) > 0 &&
+	    live)
 		fe_gap_updated (req->sess, 0);
 
 	g_free (req->network);
@@ -682,13 +686,30 @@ scrollback_load (session *sess)
 	sess->scrollback_oldest_msgid = scrollback_get_oldest_msgid (db, sess->channel);
 	sess->scrollback_newest_time = scrollback_get_newest_time (db, sess->channel);
 
-	if (prefs.hex_irc_gapfill && prefs.hex_irc_gapfill_bootstrap_hours > 0)
+	if (prefs.hex_irc_gapfill && sess->type == SESS_CHANNEL)
 	{
-		gap_bootstrap_req *breq = g_new0 (gap_bootstrap_req, 1);
-		breq->sess = sess;
-		breq->network = g_strdup (network);
-		breq->channel = g_strdup (sess->channel);
-		g_idle_add_full (G_PRIORITY_LOW, gap_bootstrap_idle_cb, breq, NULL);
+		/* Bootstrap the gap ledger for channels only.  The heuristic —
+		 * a >12h silence between stored messages means we were offline —
+		 * holds for a channel's roughly continuous traffic but is pure
+		 * false positives for a query, whose natural state is silence
+		 * between conversations.  DM history catch-up is driven by
+		 * CHATHISTORY TARGETS instead. */
+		if (prefs.hex_irc_gapfill_bootstrap_hours > 0)
+		{
+			gap_bootstrap_req *breq = g_new0 (gap_bootstrap_req, 1);
+			breq->sess = sess;
+			breq->network = g_strdup (network);
+			breq->channel = g_strdup (sess->channel);
+			g_idle_add_full (G_PRIORITY_LOW, gap_bootstrap_idle_cb, breq, NULL);
+		}
+	}
+	else if (prefs.hex_irc_gapfill)
+	{
+		/* Non-channel window: clear any candidate gaps an earlier build's
+		 * unconditional bootstrap manufactured here.  Witnessed and dead
+		 * rows are real observations and stay. */
+		if (scrollback_gap_delete_candidates (db, sess->channel) > 0)
+			fe_gap_updated (sess, 0);
 	}
 
 	/* Initialize oldest_msgid from scrollback for scroll-to-load support.

@@ -513,6 +513,27 @@ gboolean scrollback_gap_drop_msgids (scrollback_db *db, gint64 gap_id);
 int scrollback_gap_reset (scrollback_db *db, const char *channel, gint64 gap_id);
 
 /**
+ * Dead-mark every live gap in the network whose end bound predates
+ * cutoff_ts: nothing in such a span exists server-side any more, so it
+ * can never be filled.  Driven by the server's advertised retention
+ * period.  A gap that merely starts before the cutoff is left alone —
+ * its recent part is still fillable and the normal fill shrinks it.
+ *
+ * @return Number of rows dead-marked.
+ */
+int scrollback_gap_expire (scrollback_db *db, gint64 cutoff_ts);
+
+/**
+ * Delete a channel's CANDIDATE-state gaps, leaving WITNESSED and DEAD
+ * rows untouched.  Used to clear the bootstrap heuristic's false
+ * positives from query windows, where a multi-day silence between
+ * conversations is normal and never indicates missed messages.
+ *
+ * @return Number of rows deleted.
+ */
+int scrollback_gap_delete_candidates (scrollback_db *db, const char *channel);
+
+/**
  * Clear the channel's gap-bootstrap latch so scrollback_gap_bootstrap
  * will scan it again.
  */
@@ -533,11 +554,15 @@ int scrollback_gap_ordinal (scrollback_db *db, const char *channel, gint64 end_t
  * channels.gap_bootstrap_done so it never rescans a channel, even if it
  * found nothing the first time.
  *
+ * min_end_ts > 0 skips any candidate whose end bound is older than it —
+ * the server's retention cutoff, past which a span is unfillable and a
+ * candidate would only be recorded to die on its first probe.
+ *
  * @return Candidates recorded (>= 0), or -1 if already done, or on
  *         bad args / error.
  */
 int scrollback_gap_bootstrap (scrollback_db *db, const char *channel,
-                              gint64 threshold_secs);
+                              gint64 threshold_secs, gint64 min_end_ts);
 
 /**
  * Begin a ref-counted transaction.  Multiple begin calls nest;

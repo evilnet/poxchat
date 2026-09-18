@@ -3264,6 +3264,58 @@ scrollback_gap_drop_msgids (scrollback_db *db, gint64 gap_id)
 	return changed;
 }
 
+/* Dead-mark every live gap (any channel) whose end bound predates the
+ * server's retention cutoff.  Returns the number of rows changed. */
+int
+scrollback_gap_expire (scrollback_db *db, gint64 cutoff_ts)
+{
+	sqlite3_stmt *stmt;
+	int changed = 0;
+
+	if (!db || cutoff_ts <= 0)
+		return 0;
+
+	if (sqlite3_prepare_v2 (db->db,
+		"UPDATE gaps SET state = ?1 WHERE state != ?1 AND end_ts < ?2",
+		-1, &stmt, NULL) != SQLITE_OK)
+		return 0;
+
+	sqlite3_bind_int (stmt, 1, SCROLLBACK_GAP_DEAD);
+	sqlite3_bind_int64 (stmt, 2, cutoff_ts);
+	if (sqlite3_step (stmt) == SQLITE_DONE)
+		changed = sqlite3_changes (db->db);
+	sqlite3_finalize (stmt);
+	return changed;
+}
+
+/* Delete a channel's CANDIDATE gaps (bootstrap false positives), leaving
+ * witnessed and dead rows in place.  Returns the number deleted. */
+int
+scrollback_gap_delete_candidates (scrollback_db *db, const char *channel)
+{
+	sqlite3_stmt *stmt;
+	gint64 channel_id;
+	int changed = 0;
+
+	if (!db || !channel)
+		return 0;
+	channel_id = scrollback_get_channel_id (db, channel);
+	if (channel_id <= 0)
+		return 0;
+
+	if (sqlite3_prepare_v2 (db->db,
+		"DELETE FROM gaps WHERE channel_id = ?1 AND state = ?2",
+		-1, &stmt, NULL) != SQLITE_OK)
+		return 0;
+
+	sqlite3_bind_int64 (stmt, 1, channel_id);
+	sqlite3_bind_int (stmt, 2, SCROLLBACK_GAP_CANDIDATE);
+	if (sqlite3_step (stmt) == SQLITE_DONE)
+		changed = sqlite3_changes (db->db);
+	sqlite3_finalize (stmt);
+	return changed;
+}
+
 int
 scrollback_gap_reset (scrollback_db *db, const char *channel, gint64 gap_id)
 {
@@ -3345,7 +3397,7 @@ scrollback_gap_ordinal (scrollback_db *db, const char *channel, gint64 end_ts)
  * candidates recorded, or -1 if already done / bad args / error. */
 int
 scrollback_gap_bootstrap (scrollback_db *db, const char *channel,
-                          gint64 threshold_secs)
+                          gint64 threshold_secs, gint64 min_end_ts)
 {
 	gint64 channel_id;
 	sqlite3_stmt *stmt = NULL;
@@ -3395,7 +3447,10 @@ scrollback_gap_bootstrap (scrollback_db *db, const char *channel,
 		{
 			gint64 ts = sqlite3_column_int64 (stmt, 0);
 			const char *msgid = (const char *) sqlite3_column_text (stmt, 1);
-			if (prev_ts > 0 && ts - prev_ts >= threshold_secs)
+			/* A span ending before the retention cutoff is unfillable;
+			 * don't record a candidate just to watch it die. */
+			if (prev_ts > 0 && ts - prev_ts >= threshold_secs &&
+			    (min_end_ts <= 0 || ts >= min_end_ts))
 			{
 				if (scrollback_gap_record (db, channel, prev_ts, prev_msgid,
 				                           ts, msgid,

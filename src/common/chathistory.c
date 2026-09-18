@@ -571,6 +571,19 @@ chathistory_request_gap_fill (session *sess, gint64 gap_id, int approach_dir)
 		return FALSE;
 	}
 
+	/* Aged past the server's retention since the connect-time sweep:
+	 * unfillable, so retire it here rather than spend a request. */
+	{
+		gint64 cutoff = chathistory_retention_cutoff (sess->server);
+		if (cutoff > 0 && gap.end_ts < cutoff)
+		{
+			scrollback_gap_set_state (db, gap_id, SCROLLBACK_GAP_DEAD);
+			fe_gap_updated (sess, gap_id);
+			scrollback_gap_clear (&gap);
+			return FALSE;
+		}
+	}
+
 	/* Ledger backoff: 5s per prior attempt, capped at 60s */
 	wait = 5 * gap.attempts;
 	if (wait > 60)
@@ -2430,10 +2443,57 @@ chathistory_parse_isupport (server *serv, const char *value)
 			{
 				serv->chathistory_limit = atoi (tokens[i] + 6);
 			}
-			/* TODO: Parse retention if needed */
+			/* Retention is its own token (CHATHISTORY_RETENTION_TOKEN),
+			 * not a sub-key here. */
 		}
 
 		g_strfreev (tokens);
+	}
+}
+
+gint64
+chathistory_retention_cutoff (server *serv)
+{
+	if (!serv || serv->chathistory_retention_secs <= 0)
+		return 0;
+	return (gint64) time (NULL) - serv->chathistory_retention_secs;
+}
+
+void
+chathistory_parse_retention (server *serv, const char *value)
+{
+	gint64 cutoff;
+	const char *network;
+	scrollback_db *db;
+	GSList *list;
+
+	if (!serv)
+		return;
+
+	serv->chathistory_retention_secs = 0;
+	if (value && value[0])
+	{
+		gint64 secs = g_ascii_strtoll (value, NULL, 10);
+		if (secs > 0)
+			serv->chathistory_retention_secs = secs;
+	}
+
+	/* Retire every ledger gap that now lies entirely past retention.
+	 * Nothing in such a span exists server-side, so probing it can only
+	 * produce an empty batch and a dead-mark — do the dead-mark now, for
+	 * free, before any of them sits in a viewport and fires a request. */
+	cutoff = chathistory_retention_cutoff (serv);
+	if (cutoff <= 0)
+		return;
+	network = server_get_network (serv, FALSE);
+	db = network ? scrollback_open (network) : NULL;
+	if (!db || scrollback_gap_expire (db, cutoff) == 0)
+		return;
+	for (list = sess_list; list; list = list->next)
+	{
+		session *sess = list->data;
+		if (sess->server == serv)
+			fe_gap_updated (sess, 0);
 	}
 }
 

@@ -965,6 +965,10 @@ inbound_005 (server * serv, char *word[], const message_tags_data *tags_data)
 			/* IRCv3 draft/chathistory ISUPPORT token
 			 * Format: CHATHISTORY=<limit> or CHATHISTORY=limit=N,retention=Xd */
 			chathistory_parse_isupport (serv, tokvalue);
+		} else if (g_strcmp0 (tokname, CHATHISTORY_RETENTION_TOKEN) == 0)
+		{
+			/* evilnet/CHATHISTORYRETENTION=<seconds>; "-token" clears it */
+			chathistory_parse_retention (serv, tokadding ? tokvalue : NULL);
 		} else if (g_strcmp0 (tokname, "MULTILINE") == 0)
 		{
 			/* IRCv3 draft/multiline ISUPPORT token
